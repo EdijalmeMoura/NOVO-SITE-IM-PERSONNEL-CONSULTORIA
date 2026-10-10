@@ -1,0 +1,38 @@
+[
+  {
+    "slug": "selecao-como-decisao-de-negocio",
+    "category": "Recrutamento",
+    "title": "Seleção como decisão de negócio: por onde começar?",
+    "intro": "Uma contratação ganha qualidade quando a necessidade deixa de ser apenas um título e passa a ser compreendida dentro do contexto da organização.",
+    "minutes": 5,
+    "body": [
+      "Antes de abrir uma posição, vale criar um entendimento compartilhado sobre o desafio que aquela pessoa ajudará a resolver. O que precisa mudar, continuar ou começar a acontecer? Essa conversa evita que a descrição da vaga se torne uma lista extensa sem prioridades.",
+      "Uma boa definição separa o que é indispensável do que pode ser desenvolvido. Experiências, competências e requisitos técnicos devem ser avaliados em relação às atividades reais, ao nível de autonomia e às interfaces da função.",
+      "Por fim, combinar critérios e momentos de decisão ajuda a tornar a seleção mais clara para todos. A empresa pode revisar o alinhamento ao longo do processo, sem perder de vista a experiência de quem participa."
+    ]
+  },
+  {
+    "slug": "lideranca-e-conversas-de-desenvolvimento",
+    "category": "Liderança",
+    "title": "Conversas de desenvolvimento que cabem na rotina",
+    "intro": "Desenvolvimento não precisa ficar restrito a um ciclo anual. Conversas frequentes e objetivas ajudam líderes e profissionais a alinhar expectativas.",
+    "minutes": 4,
+    "body": [
+      "Uma conversa produtiva começa com um propósito simples: refletir sobre o trabalho e identificar o próximo passo. Ela não precisa ser longa, mas deve acontecer em um ambiente de escuta e respeito.",
+      "Trazer exemplos observáveis ajuda a manter o diálogo concreto. Em vez de rótulos, vale discutir situações, impactos e alternativas. Isso favorece acordos claros e reduz interpretações vagas.",
+      "Registrar os próximos passos e retomar o assunto depois demonstra continuidade. A responsabilidade pelo desenvolvimento pode ser compartilhada entre profissional e liderança, com apoio das práticas da organização."
+    ]
+  },
+  {
+    "slug": "clareza-de-papeis-em-equipes",
+    "category": "Gestão de Pessoas",
+    "title": "Clareza de papéis: um ponto de partida para equipes mais alinhadas",
+    "intro": "Quando responsabilidades e interfaces estão explícitas, fica mais fácil organizar decisões, colaboração e acompanhamento das entregas.",
+    "minutes": 6,
+    "body": [
+      "Equipes mudam, projetos se transformam e responsabilidades podem ficar difusas. Revisitar os papéis não significa criar uma estrutura rígida: significa tornar compreensível quem contribui, quem decide e como as atividades se conectam.",
+      "Um mapeamento útil observa os fluxos de trabalho e conversa com as pessoas envolvidas. As descrições oficiais são um começo, mas a rotina real revela dependências, pontos de espera e sobreposições.",
+      "Depois de alinhar responsabilidades, vale combinar como a equipe vai revisar esse entendimento. A clareza precisa acompanhar as mudanças do negócio para continuar sendo útil."
+    ]
+  }
+]
