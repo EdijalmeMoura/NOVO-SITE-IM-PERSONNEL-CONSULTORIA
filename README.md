@@ -43,6 +43,33 @@ npm run admin:create -- admin@empresa.com.br
 
 O script solicita uma senha sem exibi-la no terminal. A senha deve ter pelo menos 14 caracteres e conter letras maiúsculas, minúsculas e números. Depois, acesse `/admin`. Não há usuário ou senha padrão embutidos no repositório. O script pode ser executado novamente para cadastrar outra conta administrativa.
 
+### Criar o primeiro acesso administrativo sem Shell (Render ou outra plataforma sem terminal)
+
+Quando a plataforma não oferece terminal (Shell) para executar `npm run admin:create`, o administrador inicial pode ser criado pelas variáveis de ambiente do próprio serviço. Nenhuma senha em texto puro é gravada no painel de variáveis:
+
+1. Em um computador seguro, gere o hash da senha (mesmas regras de 14+ caracteres com maiúsculas, minúsculas e números):
+
+   ```bash
+   npm ci
+   npm run admin:hash
+   ```
+
+   O script pede a senha sem exibi-la e imprime uma linha no formato `salt:digest`. Esse valor não permite recuperar a senha, mas trate-o como segredo.
+
+2. No serviço, defina as variáveis:
+
+   - `ADMIN_BOOTSTRAP_EMAIL`: e-mail do administrador inicial.
+   - `ADMIN_BOOTSTRAP_PASSWORD_HASH`: a linha gerada no passo anterior (marque como **secreta**).
+
+3. Publique o serviço. Na inicialização, o servidor cria o usuário (ou atualiza a senha, se o e-mail já existir com outro hash) e registra a ação na trilha de auditoria como `bootstrap`. A mensagem `Administrador inicial criado...` aparece nos logs. Depois acesse `/admin`.
+
+Regras de comportamento:
+
+- Sem as duas variáveis, nada acontece. Definir somente uma delas, um e-mail inválido ou um hash fora do formato faz o servidor **recusar a inicialização** com mensagem explícita nos logs.
+- A operação é idempotente: reinicializações com as mesmas variáveis não duplicam a conta.
+- Para trocar a senha desse acesso, gere um novo hash e substitua a variável; no próximo start a senha do e-mail é atualizada.
+- **Se o banco não estiver em disco persistente**, a conta é recriada a cada reinício a partir dessas variáveis, portanto mantenha-as definidas. Com disco persistente, após o primeiro acesso elas podem ser removidas.
+
 ### Testes
 
 ```bash
@@ -57,12 +84,27 @@ As variáveis estão documentadas em `.env.example`:
 
 - `DATA_DIR` e `DB_FILE`: local da base SQLite e dos currículos privados.
 - `SITE_URL` e `VITE_SITE_URL`: domínio canônico em produção.
+- `ADMIN_BOOTSTRAP_EMAIL` e `ADMIN_BOOTSTRAP_PASSWORD_HASH`: administrador inicial sem Shell (veja a seção específica acima).
 - `VITE_WHATSAPP_NUMBER`: número oficial no formato internacional, somente dígitos.
 - `LEADS_NOTIFICATION_EMAIL`: caixa corporativa para notificações.
 - `SMTP_*` e `EMAIL_FROM`: configuração de e-mail transacional.
 - `APPLICATION_RETENTION_DAYS`, `TALENT_RETENTION_DAYS`, `LEAD_RETENTION_DAYS`, `PRIVACY_REQUEST_RETENTION_DAYS` e `AUDIT_RETENTION_DAYS`: prazos em dias definidos pela IM Personnel.
 
 **O servidor recusa inicialização com `NODE_ENV=production` se algum prazo de retenção estiver ausente ou inválido.** Os valores devem ser definidos e aprovados pela pessoa responsável por privacidade, não copiados sem análise. A rotina de descarte remove registros vencidos e currículos associados na inicialização e uma vez ao dia. Pedidos de exclusão/retirada de autorização também podem ser encaminhados manualmente no painel.
+
+## Persistência de dados no Render
+
+**Os dados da aplicação não são um banco gerenciado do Render.** A aplicação grava em um arquivo SQLite (`DATA_DIR/DB_FILE`) e em `DATA_DIR/private-resumes/`. O Render Postgres, mesmo sendo persistente, não é usado por este código.
+
+Por padrão, serviços web do Render têm sistema de arquivos **efêmero**: qualquer reinício, novo deploy ou troca de instância apaga o arquivo SQLite, os currículos e todas as candidaturas, leads e artigos. Para evitar isso:
+
+- Use um serviço web **pago** (o plano Free não suporta disco persistente nem Shell).
+- Anexe um **Persistent Disk** com mount path, por exemplo, `/var/data`.
+- Defina `DATA_DIR=/var/data`. Sem essa variável, o padrão `./storage` fica dentro da pasta da aplicação e **não** é persistente.
+- Lembre-se: discos não são acessíveis em build command, pre-deploy command nem em jobs one-off, por isso o bootstrap acima roda na inicialização do próprio servidor. Adicionar disco impede deploys sem indisponibilidade e restringe o serviço a uma instância.
+- Faça backup do disco e dos currículos conforme a seção de backup abaixo.
+
+Antes de publicar, confirme no painel do Render, em **Disk** do serviço, que o disco está ativo, que o mount path coincide com `DATA_DIR` e que o plano é pago. Crie uma candidatura de teste, reinicie o serviço e confirme que ela continua disponível.
 
 ## Build e publicação
 
