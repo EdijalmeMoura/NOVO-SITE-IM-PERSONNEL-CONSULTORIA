@@ -10,6 +10,7 @@ import rateLimit from 'express-rate-limit';
 import { createServer as createViteServer } from 'vite';
 import { all, get, initializeDatabase, persistDatabase, run } from './db.mjs';
 import { verifyPassword } from './auth.mjs';
+import { ensureBootstrapAdmin } from './bootstrap.mjs';
 import { isEmailConfigured, sendMessage } from './mailer.mjs';
 import insightDefaults from '../content/insights.json' with { type: 'json' };
 
@@ -91,6 +92,10 @@ if (Number(get('SELECT COUNT(*) AS count FROM articles')?.count || 0) === 0) {
   }
   persistDatabase();
 }
+// Falha na inicialização (variáveis inconsistentes) é intencional: o erro aparece nos logs do deploy.
+const bootstrapResult = ensureBootstrapAdmin();
+if (bootstrapResult === 'created') console.log('Administrador inicial criado a partir de ADMIN_BOOTSTRAP_EMAIL.');
+if (bootstrapResult === 'updated') console.log('Senha do administrador inicial atualizada a partir de ADMIN_BOOTSTRAP_PASSWORD_HASH.');
 purgeExpiredData();
 const retentionTimer = setInterval(() => {
   try { purgeExpiredData(); }
