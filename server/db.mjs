@@ -6,7 +6,8 @@ import initSqlJs from 'sql.js';
 
 const require = createRequire(import.meta.url);
 const wasmPath = require.resolve('sql.js/dist/sql-wasm.wasm');
-const dataDir = path.resolve(process.env.DATA_DIR || 'storage');
+const configuredDataDir = (process.env.DATA_DIR || '').trim();
+const dataDir = path.resolve(configuredDataDir || 'storage');
 const databasePath = path.join(dataDir, process.env.DB_FILE || 'im-personnel.sqlite');
 let db;
 

@@ -43,6 +43,12 @@ npm run admin:create -- admin@empresa.com.br
 
 O script solicita uma senha sem exibi-la no terminal. A senha deve ter pelo menos 14 caracteres e conter letras maiúsculas, minúsculas e números. Depois, acesse `/admin`. Não há usuário ou senha padrão embutidos no repositório. O script pode ser executado novamente para cadastrar outra conta administrativa.
 
+### Criar o primeiro acesso pela página de configuração
+
+Em uma instalação nova, também é possível abrir `/configuracao-inicial` e cadastrar o primeiro administrador pelo navegador. A página exige e-mail válido e a mesma regra de senha forte do utilitário de terminal; a conta é armazenada com `scrypt` e a criação é registrada na auditoria.
+
+Essa rota **só aceita uma criação enquanto a base não tiver nenhum administrador**; depois ela responde com conflito e o painel volta a exigir login e token CSRF para ações administrativas. Ainda assim, como uma instalação sem administrador não possui autenticação prévia, use essa página imediatamente após o deploy em uma URL protegida/restrita à equipe responsável. Para um serviço já público, prefira o bootstrap por variáveis de ambiente descrito abaixo.
+
 ### Criar o primeiro acesso administrativo sem Shell (Render ou outra plataforma sem terminal)
 
 Quando a plataforma não oferece terminal (Shell) para executar `npm run admin:create`, o administrador inicial pode ser criado pelas variáveis de ambiente do próprio serviço. Nenhuma senha em texto puro é gravada no painel de variáveis:
