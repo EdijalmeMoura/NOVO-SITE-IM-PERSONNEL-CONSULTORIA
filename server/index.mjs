@@ -8,14 +8,15 @@ import helmet from 'helmet';
 import multer from 'multer';
 import rateLimit from 'express-rate-limit';
 import { createServer as createViteServer } from 'vite';
-import { all, get, initializeDatabase, persistDatabase, run } from './db.mjs';
+import { all, databaseFilePath, get, initializeDatabase, persistDatabase, run } from './db.mjs';
 import { verifyPassword } from './auth.mjs';
 import { ensureBootstrapAdmin } from './bootstrap.mjs';
 import { isEmailConfigured, sendMessage } from './mailer.mjs';
 import insightDefaults from '../content/insights.json' with { type: 'json' };
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const storagePath = path.resolve(process.env.DATA_DIR || path.join(root, 'storage'));
+const configuredDataDir = (process.env.DATA_DIR || '').trim();
+const storagePath = path.resolve(configuredDataDir || path.join(root, 'storage'));
 const resumesPath = path.join(storagePath, 'private-resumes');
 const NOTICE_VERSION = '2026-10-v1';
 const app = express();
@@ -23,6 +24,9 @@ const sessions = new Map();
 const sessionCleanup = setInterval(() => { const now = Date.now(); for (const [key, session] of sessions) if (session.expiresAt <= now) sessions.delete(key); }, 15 * 60 * 1000);
 sessionCleanup.unref();
 const isProduction = process.env.NODE_ENV === 'production';
+if (!configuredDataDir) {
+  console.warn(`DATA_DIR não configurado; usando ${storagePath}. Em ambientes com disco efêmero, SQLite e currículos privados serão perdidos após reinicializações. Defina DATA_DIR para um diretório persistente antes de publicar.`);
+}
 const retentionPolicy = readRetentionPolicy(isProduction);
 const allowedApplicationStatuses = ['Candidatura recebida', 'Em análise', 'Em processo seletivo', 'Encerrada'];
 const allowedLeadStatuses = ['Novo contato', 'Em atendimento', 'Reunião agendada', 'Proposta enviada', 'Em negociação', 'Convertido', 'Não convertido'];
@@ -684,5 +688,5 @@ if (isProduction) {
 const port = Number(process.env.PORT || 5173);
 app.listen(port, '0.0.0.0', () => {
   console.log(`IM Personnel web app listening on 0.0.0.0:${port} (${isProduction ? 'production' : 'development'})`);
-  console.log(`SQLite database: ${path.join(storagePath, process.env.DB_FILE || 'im-personnel.sqlite')}`);
+  console.log(`SQLite database: ${databaseFilePath()}`);
 });
