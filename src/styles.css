@@ -141,7 +141,7 @@ img { max-width: 100%; }
 .hero-eyebrow > i { display: block; width: 22px; height: 1px; background: rgba(255, 255, 255, .38); }
 .hero-pulse { position: relative; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent-soft); box-shadow: 0 0 0 5px rgba(184, 184, 184, .12); }
 .hero h1 { max-width: 770px; margin: 31px 0 20px; color: #ffffff; font-family: var(--serif); font-size: clamp(58px, 7.2vw, 94px); line-height: .99; font-weight: 600; letter-spacing: -.073em; }
-.hero h1 span { color: #bebebe; }
+.hero h1 .hero-title-accent { color: #bebebe; }
 .hero-text { max-width: 485px; margin: 0; color: rgba(242, 242, 242, .76); font-size: 15px; line-height: 1.8; }
 .hero-actions { display: flex; align-items: center; gap: 26px; margin-top: 29px; }
 .button-hero { min-height: 52px; padding-inline: 22px; }
@@ -154,6 +154,19 @@ img { max-width: 100%; }
 .hero-side-label { position: absolute; z-index: 2; top: 50%; right: 29px; display: flex; flex-direction: column; gap: 12px; transform: translateY(-50%); writing-mode: vertical-rl; color: rgba(255, 255, 255, .6); font-size: 8px; letter-spacing: .19em; }
 .hero-scroll { position: absolute; z-index: 2; right: 5.4%; bottom: 49px; display: grid; place-items: center; width: 37px; height: 37px; border: 1px solid rgba(255, 255, 255, .38); border-radius: 50%; color: white; transition: background .2s, transform .2s; }
 .hero-scroll:hover { background: rgba(255, 255, 255, .12); transform: translateY(4px); }
+.hero-carousel { isolation: isolate; }
+.hero-carousel-image { animation: hero-carousel-image-in .72s ease-out both; }
+@keyframes hero-carousel-image-in { from { opacity: .25; transform: scale(1.025); } to { opacity: 1; transform: scale(1); } }
+.hero-carousel-controls { position: absolute; z-index: 3; bottom: 40px; left: max(36px, calc((100vw - var(--container)) / 2)); display: flex; gap: 7px; }
+.hero-carousel-controls button { display: grid; place-items: center; width: 33px; height: 33px; padding: 0; border: 1px solid rgba(255, 255, 255, .36); border-radius: 50%; color: rgba(255, 255, 255, .9); background: rgba(8, 13, 22, .28); cursor: pointer; transition: color .2s, background .2s, border-color .2s, transform .2s; }
+.hero-carousel-controls button:hover { border-color: rgba(255, 255, 255, .75); color: #ffffff; background: rgba(255, 255, 255, .16); transform: translateY(-2px); }
+.hero-carousel-controls button[aria-pressed="true"] { color: #111827; border-color: #d8d8d8; background: #d8d8d8; }
+.hero-carousel-dots { display: flex; align-items: center; gap: 7px; margin-left: auto; }
+.hero-carousel-dot { width: 6px; height: 6px; padding: 0; border: 0; border-radius: 20px; background: rgba(255, 255, 255, .38); cursor: pointer; transition: width .22s ease, background .22s ease, transform .22s ease; }
+.hero-carousel-dot:hover { background: rgba(255, 255, 255, .8); transform: scale(1.1); }
+.hero-carousel-dot.is-active { width: 23px; background: #d0d0d0; }
+.screen-reader-text { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
+@media (prefers-reduced-motion: reduce) { .hero-carousel-image { animation: none; } }
 
 /* Home positioning / audience */
 .positioning-section { padding: 126px 0 129px; background: #ffffff; }
@@ -973,6 +986,9 @@ img { max-width: 100%; }
   .hero-bottom-note { margin-top: 71px; font-size: 8px; }
   .hero-side-label { right: 12px; font-size: 7px; }
   .hero-scroll { right: 24px; bottom: 25px; }
+  .hero-carousel-controls { bottom: 24px; left: 21px; }
+  .hero-carousel-controls button { width: 31px; height: 31px; }
+  .hero-carousel-dots { margin-left: 0; }
   .positioning-section { padding: 83px 0 86px; }
   .positioning-grid { grid-template-columns: 1fr; gap: 22px; }
   .positioning-label { gap: 12px; }
@@ -1134,6 +1150,9 @@ img { max-width: 100%; }
   .hero-bottom-note { gap: 9px; margin-top: 46px; font-size: 7px; letter-spacing: .07em; }
   .hero-bottom-line { width: 35px; }
   .hero-scroll { bottom: 20px; }
+  .hero-carousel-controls { bottom: 18px; left: 17px; }
+  .hero-bottom-note { flex-wrap: wrap; row-gap: 8px; }
+  .hero-carousel-dots { flex-basis: 100%; }
   .hero-side-label { display: none; }
   .positioning-copy h2 { font-size: 35px; }
   .audience-card { min-height: 348px; padding: 22px; }
