@@ -9,7 +9,7 @@ import multer from 'multer';
 import rateLimit from 'express-rate-limit';
 import { createServer as createViteServer } from 'vite';
 import { all, databaseFilePath, get, initializeDatabase, persistDatabase, run } from './db.mjs';
-import { verifyPassword } from './auth.mjs';
+import { hashPassword, verifyPassword } from './auth.mjs';
 import { ensureBootstrapAdmin } from './bootstrap.mjs';
 import { isEmailConfigured, sendMessage } from './mailer.mjs';
 import insightDefaults from '../content/insights.json' with { type: 'json' };
@@ -48,6 +48,7 @@ function readRetentionPolicy(required) {
 const asText = (value, max = 4000) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
 const asEmail = (value) => asText(value, 254).toLowerCase();
 const validEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+const strongAdminPassword = (value) => typeof value === 'string' && value.length >= 14 && /[a-z]/.test(value) && /[A-Z]/.test(value) && /\d/.test(value);
 const validPhone = (value) => /^[+()\d\s.-]{8,24}$/.test(value);
 function validLinkedIn(value) {
   if (!value) return true;
@@ -137,6 +138,7 @@ const talentLimiter = createFormLimiter();
 const leadLimiter = createFormLimiter();
 const privacyLimiter = createFormLimiter();
 const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 8, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Muitas tentativas de acesso. Aguarde alguns minutos e tente novamente.' } });
+const initialAdminLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 4, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Muitas tentativas de configuração em pouco tempo. Aguarde alguns minutos e tente novamente.' } });
 const upload = multer({
   storage: multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, resumesPath),
@@ -414,6 +416,34 @@ app.post('/api/privacy-requests', privacyLimiter, (req, res) => {
       .catch(() => console.warn('Falha ao enviar confirmação de solicitação de privacidade.'));
   }
   res.status(201).json({ ok: true, reference: ref, message: 'Sua solicitação foi registrada para análise.' });
+});
+
+function isSameOriginRequest(req) {
+  const origin = req.get('origin');
+  if (!origin) return true;
+  try {
+    return new URL(origin).origin === `${req.protocol}://${req.get('host')}`;
+  } catch { return false; }
+}
+
+// Esta rota só cria o primeiro acesso. Depois que uma conta existe, a administração volta a exigir sessão e CSRF.
+app.post('/api/setup/initial-admin', initialAdminLimiter, (req, res) => {
+  if (!isSameOriginRequest(req)) return res.status(403).json({ error: 'Esta configuração precisa ser enviada pela página deste site.' });
+  if (get('SELECT id FROM admin_users LIMIT 1')) return res.status(409).json({ error: 'A configuração inicial já foi concluída. Entre no painel com uma conta administrativa existente.' });
+
+  const email = asEmail(req.body?.email);
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  if (!validEmail(email)) return res.status(400).json({ error: 'Informe um endereço de e-mail válido.' });
+  if (!strongAdminPassword(password)) return res.status(400).json({ error: 'A senha deve ter ao menos 14 caracteres, com letras maiúsculas, minúsculas e números.' });
+
+  const id = uuid();
+  const created = nowIso();
+  const { salt, digest } = hashPassword(password);
+  run('INSERT INTO admin_users (id, email, salt, password_hash, created_at) VALUES (?, ?, ?, ?, ?)', [id, email, salt, digest, created]);
+  run('INSERT INTO audit_log (id, actor_email, action, entity_type, entity_id, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [uuid(), 'initial-setup', 'admin.initial_setup_created', 'admin_user', id, JSON.stringify({ email }), created]);
+  persistDatabase();
+  console.log(`Administrador inicial criado pela configuração inicial: ${email}`);
+  res.status(201).json({ ok: true, message: 'Administrador inicial criado. Agora você pode entrar no painel.' });
 });
 
 app.get('/api/admin/session', (req, res) => {

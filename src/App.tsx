@@ -15,6 +15,7 @@ import { Contact } from './pages/Contact';
 import { Insights, InsightDetail } from './pages/Insights';
 import { CookiesPage, PrivacyPage } from './pages/Legal';
 import { AdminPanel } from './pages/Admin';
+import { InitialSetup } from './pages/InitialSetup';
 import { usePageMeta } from './hooks/usePageMeta';
 
 function PublicLayout({ children }: { children: ReactNode }) {
@@ -32,6 +33,7 @@ function NotFound() {
 function RouteTree() {
   return <><ScrollToTop /><Routes>
     <Route path="/admin/*" element={<AdminPanel />} />
+    <Route path="/configuracao-inicial" element={<PublicLayout><InitialSetup /></PublicLayout>} />
     <Route path="/" element={<PublicLayout><Home /></PublicLayout>} />
     <Route path="/sobre" element={<PublicLayout><About /></PublicLayout>} />
     <Route path="/solucoes" element={<PublicLayout><Solutions /></PublicLayout>} />
