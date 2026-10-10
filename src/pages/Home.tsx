@@ -36,7 +36,7 @@ export function Home() {
   }, []);
 
   return (
-    <main>
+    <main className="home-page">
       <section className="hero">
         <img className="hero-image" src="/images/hero-team.jpg" alt="Lideranças e profissionais colaborando em uma conversa de estratégia" fetchPriority="high" />
         <div className="hero-grain" aria-hidden="true" />
