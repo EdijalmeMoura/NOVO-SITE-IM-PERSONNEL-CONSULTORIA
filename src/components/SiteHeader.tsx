@@ -27,7 +27,7 @@ export function SiteHeader() {
   return (
     <header className={`site-header ${isHome && !scrolled ? 'header-on-hero' : 'header-solid'} ${mobileOpen ? 'mobile-open' : ''}`}>
       <div className="header-inner">
-        <Logo light={isHome && !scrolled && !mobileOpen} />
+        <Logo light={isHome && !scrolled} />
         <nav id="main-navigation" className={`main-nav ${mobileOpen ? 'nav-open' : ''}`} aria-label="Navegação principal">
           <NavLink to="/" end className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>Início</NavLink>
           <NavLink to="/sobre" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>A empresa</NavLink>

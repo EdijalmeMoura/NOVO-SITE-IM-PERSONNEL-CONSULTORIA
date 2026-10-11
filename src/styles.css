@@ -42,8 +42,11 @@ img { max-width: 100%; }
 
 /* Brand and navigation */
 .brand { display: inline-flex; align-items: center; flex: 0 0 auto; max-width: 100%; color: var(--dark); }
-.brand-logo-img { display: block; width: 138px; height: 42px; max-width: 100%; object-fit: contain; object-position: left center; filter: grayscale(1); }
+.brand-logo-img { display: block; width: 138px; height: 42px; max-width: 100%; object-fit: contain; object-position: left center; filter: grayscale(1); transition: filter .28s ease, background-color .28s ease; }
 .brand-light .brand-logo-img { padding: 3px 8px; border-radius: 4px; background: #ffffff; }
+.site-header.header-on-hero .brand-light .brand-logo-img,
+.site-footer .brand-light .brand-logo-img { padding: 0; background: transparent; filter: grayscale(1) invert(1) contrast(4); mix-blend-mode: screen; }
+.site-header.header-solid .brand-logo-img { filter: none; mix-blend-mode: normal; }
 .brand-fallback { display: flex; flex-direction: column; line-height: 1.05; color: var(--dark); }
 .brand-fallback strong { font-family: var(--serif); font-size: 17px; font-weight: 800; letter-spacing: -.045em; }
 .brand-fallback small { margin-top: 5px; color: var(--muted); font-size: 8px; font-weight: 700; letter-spacing: .2em; }
