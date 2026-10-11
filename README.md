@@ -43,6 +43,14 @@ npm run admin:create -- admin@empresa.com.br
 
 O script solicita uma senha sem exibi-la no terminal. A senha deve ter pelo menos 14 caracteres e conter letras maiúsculas, minúsculas e números. Depois, acesse `/admin`. Não há usuário ou senha padrão embutidos no repositório. O script pode ser executado novamente para cadastrar outra conta administrativa.
 
+ou 
+```bash
+https://seudominio.com/configuracao-inicial/
+```
+Configure o primeiro acesso.
+Use esta etapa somente na instalação inicial. Depois que a primeira conta for criada, os demais acessos devem ser cadastrados pela operação autorizada.
+
+
 ### Criar o primeiro acesso pela página de configuração
 
 Em uma instalação nova, também é possível abrir `/configuracao-inicial` e cadastrar o primeiro administrador pelo navegador. A página exige e-mail válido e a mesma regra de senha forte do utilitário de terminal; a conta é armazenada com `scrypt` e a criação é registrada na auditoria.
