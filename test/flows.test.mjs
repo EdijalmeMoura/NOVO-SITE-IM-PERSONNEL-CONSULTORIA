@@ -29,7 +29,7 @@ before(async () => {
   baseUrl = `http://127.0.0.1:${port}`;
   child = spawn(process.execPath, ['server/index.mjs'], {
     cwd: root,
-    env: { ...process.env, NODE_ENV: 'production', DATA_DIR: dataDir, PORT: String(port), SITE_URL: 'https://impersonnel.com.br', APPLICATION_RETENTION_DAYS: '365', TALENT_RETENTION_DAYS: '365', LEAD_RETENTION_DAYS: '365', PRIVACY_REQUEST_RETENTION_DAYS: '365', AUDIT_RETENTION_DAYS: '365' },
+    env: { ...process.env, NODE_ENV: 'production', DATA_DIR: dataDir, PORT: String(port), SITE_URL: 'https://impersonnel.com.br', APPLICATION_RETENTION_DAYS: '365', TALENT_RETENTION_DAYS: '365', LEAD_RETENTION_DAYS: '365', PRIVACY_REQUEST_RETENTION_DAYS: '365', AUDIT_RETENTION_DAYS: '365', ADMIN_BOOTSTRAP_EMAIL: '', ADMIN_BOOTSTRAP_PASSWORD_HASH: '', LEADS_NOTIFICATION_EMAIL: '', SMTP_HOST: '', EMAIL_FROM: '' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let logs = '';
@@ -211,3 +211,128 @@ async function putAdmin(route, body) {
 async function deleteAdmin(route) {
   return fetch(`${baseUrl}${route}`, { method: 'DELETE', headers: { cookie, 'x-csrf-token': csrf } });
 }
+
+const PNG_1x1 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+const strongPassword = 'NovaSenhaForte2026!';
+
+async function loginAs(email, password) {
+  const response = await fetch(`${baseUrl}/api/admin/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password }) });
+  const data = await response.json().catch(() => ({}));
+  return { response, data, cookie: response.headers.get('set-cookie')?.split(';')[0] || '', csrf: data.csrf || '' };
+}
+async function useMainAdmin() {
+  const result = await loginAs('admin@example.test', adminPassword);
+  assert.equal(result.response.status, 200, 'o administrador principal continua acessando o painel');
+  cookie = result.cookie; csrf = result.csrf;
+  return result;
+}
+function articleForm(overrides = {}) {
+  const form = new FormData();
+  form.set('title', 'Conteúdo com imagem de capa');
+  form.set('category', 'Cultura');
+  form.set('intro', 'Resumo do conteúdo usado para validar o envio de imagem pelo painel.');
+  form.set('body', 'Primeiro parágrafo do conteúdo.\n\nSegundo parágrafo do conteúdo.');
+  form.set('minutes', '5');
+  form.set('published', 'true');
+  form.set('remove_image', 'false');
+  form.set('image_alt', 'Imagem de teste do painel');
+  for (const [key, value] of Object.entries(overrides)) form.set(key, String(value));
+  return form;
+}
+
+test('conteúdos aceitam imagem de capa enviada pelo painel', { timeout: 30_000 }, async () => {
+  await useMainAdmin();
+  const form = articleForm();
+  form.append('image', new Blob([PNG_1x1], { type: 'image/png' }), 'capa.png');
+  const createResponse = await fetch(`${baseUrl}/api/admin/articles`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf }, body: form });
+  const created = await createResponse.json();
+  assert.equal(createResponse.status, 201);
+  const article = created.article;
+  assert.match(article.image_key, /^[a-f0-9-]{36}\.png$/, 'a imagem recebe uma chave uuid com a extensão correta');
+  assert.equal(article.image_url, `/media/content-images/${article.image_key}`);
+  assert.equal(article.image_alt, 'Imagem de teste do painel');
+  assert.equal(article.published, true);
+
+  const publicArticle = await fetch(`${baseUrl}/api/articles/${article.slug}`).then((response) => response.json());
+  assert.equal(publicArticle.article.image_url, article.image_url, 'a imagem é exposta no conteúdo público');
+
+  const imageResponse = await fetch(`${baseUrl}${article.image_url}`);
+  assert.equal(imageResponse.status, 200);
+  assert.match(imageResponse.headers.get('content-type'), /image\/png/);
+  assert.equal(Buffer.compare(Buffer.from(await imageResponse.arrayBuffer()), PNG_1x1), 0, 'a imagem servida é a mesma enviada');
+
+  const invalid = articleForm({ title: 'Conteúdo com arquivo inválido' });
+  invalid.append('image', new Blob(['isto não é uma imagem'], { type: 'image/png' }), 'falsa.png');
+  assert.equal((await fetch(`${baseUrl}/api/admin/articles`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf }, body: invalid })).status, 400, 'a assinatura da imagem é validada no servidor');
+
+  const traversal = await fetch(`${baseUrl}/media/content-images/..%2f..%2fim-personnel.sqlite`);
+  assert.equal(traversal.status, 404, 'chaves inválidas não alcançam o disco');
+
+  const keepForm = articleForm({ title: 'Título revisado do conteúdo' });
+  const updateResponse = await fetch(`${baseUrl}/api/admin/articles/${article.id}`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf }, body: keepForm });
+  const updated = await updateResponse.json();
+  assert.equal(updateResponse.status, 200);
+  assert.equal(updated.article.image_key, article.image_key, 'editar sem enviar arquivo mantém a imagem atual');
+  assert.equal(updated.article.title, 'Título revisado do conteúdo');
+
+  const removeForm = articleForm({ remove_image: 'true' });
+  const removed = await (await fetch(`${baseUrl}/api/admin/articles/${article.id}`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf }, body: removeForm })).json();
+  assert.equal(removed.article.image_url, '', 'remover a imagem limpa o campo');
+  assert.equal((await fetch(`${baseUrl}${article.image_url}`)).status, 404, 'o arquivo da imagem removida sai do ar');
+});
+
+test('o painel cria e desativa usuários administrativos', { timeout: 30_000 }, async () => {
+  await useMainAdmin();
+  const listing = await fetch(`${baseUrl}/api/admin/users`, { headers: { cookie } }).then((response) => response.json());
+  assert.ok(listing.items.some((user) => user.email === 'admin@example.test'));
+  assert.ok(listing.current_user_id, 'a lista informa quem está operando o painel');
+  assert.ok(listing.items.every((user) => !('password_hash' in user) && !('salt' in user)), 'credenciais nunca são expostas');
+
+  const weak = await postAdmin('/api/admin/users', { name: 'Senha Fraca', email: 'fraco@example.test', password: 'curta1' });
+  assert.equal(weak.response.status, 400);
+
+  const created = await postAdmin('/api/admin/users', { name: 'Pessoa Recrutadora', email: 'recrutadora@example.test', password: strongPassword });
+  assert.equal(created.response.status, 201);
+  assert.equal(created.data.user.active, true);
+  assert.equal(created.data.user.name, 'Pessoa Recrutadora');
+
+  const duplicate = await postAdmin('/api/admin/users', { name: 'Duplicada', email: 'recrutadora@example.test', password: strongPassword });
+  assert.equal(duplicate.response.status, 409, 'e-mail administrativo é único');
+
+  const newUser = await loginAs('recrutadora@example.test', strongPassword);
+  assert.equal(newUser.response.status, 200, 'a nova conta entra no painel');
+  assert.equal(newUser.data.user.name, 'Pessoa Recrutadora');
+  const asNewUser = await fetch(`${baseUrl}/api/admin/jobs`, { headers: { cookie: newUser.cookie } });
+  assert.equal(asNewUser.status, 200, 'a nova conta lê dados administrativos');
+
+  assert.equal((await putAdmin(`/api/admin/users/${listing.current_user_id}`, { active: false })).response.status, 409, 'ninguém desativa a própria conta em uso');
+
+  const deactivated = await putAdmin(`/api/admin/users/${created.data.user.id}`, { active: false });
+  assert.equal(deactivated.response.status, 200);
+  assert.equal(deactivated.data.user.active, false);
+
+  const revokedSession = await fetch(`${baseUrl}/api/admin/session`, { headers: { cookie: newUser.cookie } }).then((response) => response.json());
+  assert.equal(revokedSession.authenticated, false, 'desativar derruba a sessão que estava aberta');
+  assert.equal((await fetch(`${baseUrl}/api/admin/jobs`, { headers: { cookie: newUser.cookie } })).status, 401);
+
+  const blockedLogin = await loginAs('recrutadora@example.test', strongPassword);
+  assert.equal(blockedLogin.response.status, 403, 'conta desativada não entra mais');
+  assert.match(blockedLogin.data.error, /desativada/i);
+
+  const reactivated = await putAdmin(`/api/admin/users/${created.data.user.id}`, { active: true, name: 'Pessoa Recrutadora Sênior', password: 'OutraSenhaForte2026!' });
+  assert.equal(reactivated.response.status, 200);
+  assert.equal(reactivated.data.user.active, true);
+  assert.equal(reactivated.data.user.name, 'Pessoa Recrutadora Sênior');
+  // Um único login aqui comprova ao mesmo tempo a reativação e a troca de senha.
+  const afterReset = await loginAs('recrutadora@example.test', 'OutraSenhaForte2026!');
+  assert.equal(afterReset.response.status, 200, 'reativar devolve o acesso e a nova senha passa a valer');
+
+  await putAdmin(`/api/admin/users/${created.data.user.id}`, { active: false });
+  const finalListing = await fetch(`${baseUrl}/api/admin/users`, { headers: { cookie } }).then((response) => response.json());
+  assert.equal(finalListing.items.filter((user) => user.active).length, 1, 'sempre resta ao menos uma conta ativa');
+
+  const auditTrail = await fetch(`${baseUrl}/api/admin/audit`, { headers: { cookie } }).then((response) => response.json());
+  for (const action of ['admin_user.created', 'admin_user.deactivated', 'admin_user.activated', 'admin_user.password_reset', 'article.created', 'article.updated']) {
+    assert.ok(auditTrail.items.some((item) => item.action === action), `a auditoria registra ${action}`);
+  }
+});

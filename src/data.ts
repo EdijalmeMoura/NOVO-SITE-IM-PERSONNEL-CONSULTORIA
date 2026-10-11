@@ -143,5 +143,5 @@ export const methodology = [
   { number: '04', title: 'Acompanhamos a jornada', text: 'Apresentamos os perfis e apoiamos os alinhamentos ao longo do processo.' },
 ];
 
-export type Insight = { slug: string; category: string; title: string; intro: string; minutes: number; body: string[]; created_at?: string; updated_at?: string; published?: boolean; id?: string };
+export type Insight = { slug: string; category: string; title: string; intro: string; minutes: number; body: string[]; image_url?: string; image_alt?: string; image_key?: string; created_at?: string; updated_at?: string; published?: boolean; id?: string };
 export const insights: Insight[] = insightDefaults as Insight[];

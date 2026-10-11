@@ -29,6 +29,12 @@ before(async () => {
       LEAD_RETENTION_DAYS: '365',
       PRIVACY_REQUEST_RETENTION_DAYS: '365',
       AUDIT_RETENTION_DAYS: '365',
+      // Um .env local não pode mudar o cenário do teste: o dotenv não sobrescreve variáveis já definidas no processo.
+      ADMIN_BOOTSTRAP_EMAIL: '',
+      ADMIN_BOOTSTRAP_PASSWORD_HASH: '',
+      LEADS_NOTIFICATION_EMAIL: '',
+      SMTP_HOST: '',
+      EMAIL_FROM: '',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

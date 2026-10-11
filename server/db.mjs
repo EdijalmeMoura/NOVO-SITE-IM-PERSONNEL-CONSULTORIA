@@ -50,6 +50,8 @@ export async function initializeDatabase() {
       intro TEXT NOT NULL,
       body TEXT NOT NULL DEFAULT '[]',
       minutes INTEGER NOT NULL DEFAULT 4,
+      image_key TEXT NOT NULL DEFAULT '',
+      image_alt TEXT NOT NULL DEFAULT '',
       published INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -131,9 +133,13 @@ export async function initializeDatabase() {
     CREATE TABLE IF NOT EXISTS admin_users (
       id TEXT PRIMARY KEY,
       email TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL DEFAULT '',
       salt TEXT NOT NULL,
       password_hash TEXT NOT NULL,
-      created_at TEXT NOT NULL
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT '',
+      last_login_at TEXT NOT NULL DEFAULT ''
     );
 
     CREATE TABLE IF NOT EXISTS audit_log (
@@ -151,6 +157,12 @@ export async function initializeDatabase() {
     ['jobs', 'hiring_organization', "TEXT NOT NULL DEFAULT ''"],
     ['privacy_requests', 'updated_at', "TEXT NOT NULL DEFAULT ''"],
     ['privacy_requests', 'internal_notes', "TEXT NOT NULL DEFAULT ''"],
+    ['articles', 'image_key', "TEXT NOT NULL DEFAULT ''"],
+    ['articles', 'image_alt', "TEXT NOT NULL DEFAULT ''"],
+    ['admin_users', 'name', "TEXT NOT NULL DEFAULT ''"],
+    ['admin_users', 'active', 'INTEGER NOT NULL DEFAULT 1'],
+    ['admin_users', 'updated_at', "TEXT NOT NULL DEFAULT ''"],
+    ['admin_users', 'last_login_at', "TEXT NOT NULL DEFAULT ''"],
   ]) {
     const statement = db.prepare(`PRAGMA table_info(${table})`);
     let present = false;

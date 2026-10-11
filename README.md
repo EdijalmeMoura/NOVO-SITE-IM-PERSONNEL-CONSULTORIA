@@ -10,10 +10,11 @@ Site institucional responsivo em português brasileiro para a IM Personnel, com 
 - Candidatura sem conta obrigatória; arquivo PDF/DOCX validado por extensão, MIME, assinatura e tamanho no servidor, guardado fora da pasta pública.
 - Banco de talentos com autorização explícita registrada, versão do aviso de privacidade e ação administrativa de remoção.
 - Formulário empresarial conectado a um CRM simples, com etapas, responsável e observações.
-- Painel protegido: dashboard baseado em dados reais, gestão de vagas (rascunho/publicação/duplicação/encerramento), candidaturas, currículo protegido, banco de talentos, leads, pedidos de privacidade, artigos e trilha de auditoria.
-- Gestão editorial para conteúdos/insights; os três artigos iniciais são carregados pela aplicação e podem ser editados e despublicados no painel.
+- Painel protegido: dashboard baseado em dados reais, gestão de vagas (rascunho/publicação/duplicação/encerramento), candidaturas, currículo protegido, banco de talentos, leads, pedidos de privacidade, artigos, usuários administrativos e trilha de auditoria.
+- Gestão editorial para conteúdos/insights; os três artigos iniciais são carregados pela aplicação e podem ser editados e despublicados no painel, com **imagem de capa opcional** por conteúdo (JPG, PNG, WebP ou AVIF até 5 MB, validada por assinatura no servidor, com texto alternativo e saída no sitemap/dados estruturados).
+- **Gestão de usuários administrativos no painel**: criar contas com nome e senha forte, desativar e reativar acessos, trocar senhas e acompanhar o último acesso. Desativar derruba na hora a sessão aberta e bloqueia novo login, preservando a trilha de auditoria.
 - Páginas de privacidade e preferências de cookies, sitemap dinâmico e `robots.txt`.
-- E-mail transacional opcional por SMTP. Os formulários continuam registrando os dados mesmo sem SMTP configurado.
+- E-mail transacional opcional por SMTP. Os formulários continuam registrando os dados mesmo sem SMTP configurado, e o dashboard avisa quando o SMTP ou a caixa de notificações estão desligados.
 - Teste automatizado de integração para os principais fluxos do portal e do painel.
 
 **Não há vagas, clientes, depoimentos, resultados, certificações, telefones ou endereço físico inventados.** O portal começa sem oportunidades até que uma vaga real seja cadastrada. O endereço informado no site limita-se a Recife, Pernambuco, conforme o escopo recebido. WhatsApp só aparece se um número oficial for configurado.
@@ -84,13 +85,39 @@ Regras de comportamento:
 - Para trocar a senha desse acesso, gere um novo hash e substitua a variável; no próximo start a senha do e-mail é atualizada.
 - **Se o banco não estiver em disco persistente**, a conta é recriada a cada reinício a partir dessas variáveis, portanto mantenha-as definidas. Com disco persistente, após o primeiro acesso elas podem ser removidas.
 
+### Ativar os formulários de contato e de currículo
+
+Os três formulários públicos já funcionam sem configuração adicional: cada envio é validado no servidor, gravado na base e exibido no painel administrativo.
+
+| Formulário | Rotas públicas | Endpoint | Onde a equipe acompanha |
+| --- | --- | --- | --- |
+| Contato / solicitar proposta | `/contato`, `/solicitar-proposta` | `POST /api/leads` | Painel › Leads empresariais |
+| Candidatura a uma vaga | `/vagas/{slug}/candidatar` | `POST /api/applications` | Painel › Candidaturas |
+| Currículo no banco de talentos | `/curriculo`, `/banco-de-talentos` | `POST /api/talent` | Painel › Banco de talentos |
+
+O que **só** funciona com configuração é o envio de e-mails. Sem SMTP, quem envia não recebe confirmação e a equipe não é avisada — ainda assim os dados ficam gravados e visíveis no painel. Para ativar as notificações, defina no ambiente:
+
+```
+SMTP_HOST=smtp.seuprovedor.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=usuario@seudominio.com.br
+SMTP_PASS=segredo
+EMAIL_FROM="IM Personnel <noreply@seudominio.com.br>"
+LEADS_NOTIFICATION_EMAIL=contato@seudominio.com.br
+```
+
+`LEADS_NOTIFICATION_EMAIL` é a caixa da equipe que recebe os avisos de novos contatos, candidaturas e currículos cadastrados. O dashboard exibe um aviso explícito enquanto essas variáveis estiverem ausentes, para que a falta de notificação não seja confundida com formulário inativo.
+
+Os formulários públicos têm limite de 6 envios por IP a cada 15 minutos. Se o site estiver atrás de um proxy reverso com outra topologia, reveja o `trust proxy` para não fazer todos os visitantes compartilharem o mesmo limite.
+
 ### Testes
 
 ```bash
 npm test
 ```
 
-O comando compila o frontend e executa um servidor de teste isolado com uma base temporária. O fluxo cobre: ausência inicial de vagas fictícias; login e proteção CSRF; criação/publicação/expiração/duplicação de vagas; busca pública; candidatura; assinatura e privacidade do upload; atualização de status; cadastro e exclusão de perfil do banco de talentos; leads e solicitações de privacidade; CMS; sitemap; trilha de auditoria e logout.
+O comando compila o frontend e executa um servidor de teste isolado com uma base temporária. O fluxo cobre: ausência inicial de vagas fictícias; login e proteção CSRF; criação/publicação/expiração/duplicação de vagas; busca pública; candidatura; assinatura e privacidade do upload; atualização de status; cadastro e exclusão de perfil do banco de talentos; leads e solicitações de privacidade; CMS com upload, substituição, remoção e validação de assinatura da imagem de capa; criação, desativação, reativação e troca de senha de usuários administrativos (incluindo bloqueio de auto-desativação e derrubada de sessão aberta); sitemap; trilha de auditoria e logout.
 
 ## Configuração
 
@@ -108,9 +135,9 @@ As variáveis estão documentadas em `.env.example`:
 
 ## Persistência de dados no Render
 
-**Os dados da aplicação não são um banco gerenciado do Render.** A aplicação grava em um arquivo SQLite (`DATA_DIR/DB_FILE`) e em `DATA_DIR/private-resumes/`. O Render Postgres, mesmo sendo persistente, não é usado por este código.
+**Os dados da aplicação não são um banco gerenciado do Render.** A aplicação grava em um arquivo SQLite (`DATA_DIR/DB_FILE`), nos currículos em `DATA_DIR/private-resumes/` e nas imagens de conteúdo em `DATA_DIR/content-images/`. O Render Postgres, mesmo sendo persistente, não é usado por este código.
 
-Por padrão, serviços web do Render têm sistema de arquivos **efêmero**: qualquer reinício, novo deploy ou troca de instância apaga o arquivo SQLite, os currículos e todas as candidaturas, leads e artigos. Para evitar isso:
+Por padrão, serviços web do Render têm sistema de arquivos **efêmero**: qualquer reinício, novo deploy ou troca de instância apaga o arquivo SQLite, os currículos, as imagens de conteúdo e todas as candidaturas, leads e artigos. Para evitar isso:
 
 - Use um serviço web **pago** (o plano Free não suporta disco persistente nem Shell).
 - Anexe um **Persistent Disk** com mount path, por exemplo, `/var/data`.
@@ -136,13 +163,14 @@ O servidor escuta em `0.0.0.0` e usa `PORT` (padrão 5173). Configure um proxy r
 - Persistência: SQLite compilado para WebAssembly (`sql.js`) com arquivo binário persistente, sem dependência de módulos nativos. É adequado a uma instância de baixo volume; **não compartilhe a mesma base de arquivo entre réplicas e não use NFS como substituto de um banco distribuído**. Para maior concorrência/escala, migre o adaptador para PostgreSQL/MySQL gerenciado.
 - Sessões são mantidas em memória e terminam ao reiniciar o processo. Operação prevista em uma instância. Para múltiplas instâncias, substitua por store de sessão compartilhado e banco transacional central.
 - Currículos ficam em `DATA_DIR/private-resumes`, fora de `public/` e acessíveis somente por endpoint administrativo autenticado. O servidor limita uploads a 5 MB e aceita apenas PDF/DOCX. Proteja também o volume do servidor, use criptografia de disco em produção e restrinja os backups.
+- Imagens de conteúdo ficam em `DATA_DIR/content-images` e são públicas por natureza (servidas em `/media/content-images/{chave}`). O nome do arquivo é sempre um UUID gerado no servidor com extensão fixa, a chave é validada por expressão regular antes de qualquer acesso a disco e a assinatura do arquivo é conferida no envio, o que impede traversal e upload de não-imagens.
 - O banco não cifra cada campo individualmente. Use armazenamento de produção com criptografia em repouso, controles de acesso e política de backup/rotação.
-- Todos os usuários criados pelo utilitário têm acesso administrativo completo. Gestão granular de papéis e permissões não está habilitada nesta primeira entrega; crie acessos somente para pessoas autorizadas.
+- Todas as contas administrativas têm acesso completo ao painel. A criação, a desativação/reativação e a troca de senha são feitas no painel em **Usuários** (ou pelo utilitário de terminal); gestão granular de papéis e permissões continua fora do escopo desta entrega, então crie acessos somente para pessoas autorizadas. O sistema impede desativar a própria conta em uso e mantém sempre ao menos uma conta ativa.
 - A área de candidato com conta, autenticação própria e recuperação de senha foi deixada opcional/desabilitada: a candidatura e o banco de talentos funcionam sem criar conta.
 
 ### Backup e recuperação
 
-Faça backup consistente do arquivo SQLite e de `private-resumes/` como um conjunto, com retenção e acesso restritos. Para uma cópia manual simples, pare o processo e copie ambos para armazenamento protegido. Na restauração, mantenha a relação entre os nomes aleatórios dos arquivos e as chaves da base; teste a restauração em ambiente separado antes de substituir produção. Documente responsável, frequência, criptografia, retenção e procedimento de recuperação para a operação real.
+Faça backup consistente do arquivo SQLite, de `private-resumes/` e de `content-images/` como um conjunto, com retenção e acesso restritos. Para uma cópia manual simples, pare o processo e copie ambos para armazenamento protegido. Na restauração, mantenha a relação entre os nomes aleatórios dos arquivos e as chaves da base; teste a restauração em ambiente separado antes de substituir produção. Documente responsável, frequência, criptografia, retenção e procedimento de recuperação para a operação real.
 
 ## Validações necessárias antes da publicação institucional
 

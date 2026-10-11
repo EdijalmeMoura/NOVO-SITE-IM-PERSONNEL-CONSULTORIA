@@ -18,6 +18,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const configuredDataDir = (process.env.DATA_DIR || '').trim();
 const storagePath = path.resolve(configuredDataDir || path.join(root, 'storage'));
 const resumesPath = path.join(storagePath, 'private-resumes');
+const contentImagesPath = path.join(storagePath, 'content-images');
 const NOTICE_VERSION = '2026-10-v1';
 const app = express();
 const sessions = new Map();
@@ -46,6 +47,8 @@ function readRetentionPolicy(required) {
   return policy;
 }
 const asText = (value, max = 4000) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
+// Em envios multipart os booleanos chegam como texto ('true'/'on'/'false'), por isso a conversão explícita.
+const asBoolean = (value) => value === true || ['true', 'on', '1', 'yes'].includes(String(value ?? '').trim().toLowerCase());
 const asEmail = (value) => asText(value, 254).toLowerCase();
 const validEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 const strongAdminPassword = (value) => typeof value === 'string' && value.length >= 14 && /[a-z]/.test(value) && /[A-Z]/.test(value) && /\d/.test(value);
@@ -88,6 +91,7 @@ function purgeExpiredData() {
 
 await fs.promises.mkdir(resumesPath, { recursive: true, mode: 0o700 });
 await fs.promises.chmod(resumesPath, 0o700);
+await fs.promises.mkdir(contentImagesPath, { recursive: true, mode: 0o755 });
 await initializeDatabase();
 if (Number(get('SELECT COUNT(*) AS count FROM articles')?.count || 0) === 0) {
   const created = nowIso();
@@ -166,6 +170,53 @@ function uploadLooksValid(file) {
 function discardUpload(file) {
   if (file?.path) fs.rmSync(file.path, { force: true });
 }
+
+// Imagens de conteúdo são públicas: ficam em storage/content-images e são servidas em /media/content-images.
+const IMAGE_LIMIT_BYTES = 5 * 1024 * 1024;
+const IMAGE_TYPES = new Map([
+  ['image/jpeg', { ext: '.jpg', magic: [[0xff, 0xd8, 0xff]] }],
+  ['image/png', { ext: '.png', magic: [[0x89, 0x50, 0x4e, 0x47]] }],
+  ['image/webp', { ext: '.webp', magic: [[0x52, 0x49, 0x46, 0x46]] }],
+  ['image/avif', { ext: '.avif', magic: [[0x66, 0x74, 0x79, 0x70]] }],
+]);
+const contentImageUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, contentImagesPath),
+    filename: (_req, file, cb) => {
+      const spec = IMAGE_TYPES.get(file.mimetype);
+      cb(null, `${uuid()}${spec ? spec.ext : path.extname(file.originalname).toLowerCase()}`);
+    },
+  }),
+  limits: { fileSize: IMAGE_LIMIT_BYTES, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    cb(IMAGE_TYPES.has(file.mimetype) ? null : new Error('Envie a imagem em JPG, PNG, WebP ou AVIF.'), IMAGE_TYPES.has(file.mimetype));
+  },
+});
+function imageLooksValid(file) {
+  if (!file) return false;
+  const spec = IMAGE_TYPES.get(file.mimetype);
+  if (!spec) return false;
+  try {
+    fs.chmodSync(file.path, 0o644);
+    const head = fs.readFileSync(file.path).subarray(0, 16);
+    if (!spec.magic.some((signature) => signature.every((byte, index) => head[index] === byte))) return false;
+    // WebP e AVIF compartilham o container RIFF/ISOBMFF: confira o tipo declarado dentro do arquivo.
+    if (file.mimetype === 'image/webp') return head.subarray(8, 12).toString() === 'WEBP';
+    if (file.mimetype === 'image/avif') return ['avif', 'avis', 'mif1'].includes(head.subarray(4, 8).toString());
+    return true;
+  } catch { return false; }
+}
+function contentImageKey(value) {
+  const key = asText(value, 80);
+  return /^[a-f0-9-]{36}\.(jpg|png|webp|avif)$/.test(key) ? key : '';
+}
+function discardContentImage(key) {
+  const safe = contentImageKey(key);
+  if (safe) fs.rmSync(path.join(contentImagesPath, safe), { force: true });
+}
+function imagePublicUrl(key) {
+  return key ? `/media/content-images/${key}` : '';
+}
 function parseCookie(req, name) {
   const cookies = (req.headers.cookie || '').split(';');
   const entry = cookies.map((value) => value.trim()).find((value) => value.startsWith(`${name}=`));
@@ -178,7 +229,13 @@ function getSession(req) {
     if (key) sessions.delete(key);
     return null;
   }
-  return { key, ...session };
+  // Uma conta desativada perde o acesso imediatamente, mesmo com sessão aberta.
+  const account = get('SELECT name, active FROM admin_users WHERE id = ?', [session.userId]);
+  if (!account || !Number(account.active)) {
+    sessions.delete(key);
+    return null;
+  }
+  return { key, ...session, name: account.name || session.name || '' };
 }
 function requireAdmin(req, res, next) {
   const session = getSession(req);
@@ -212,7 +269,12 @@ function jobToPublic(row) {
 }
 function articleToPublic(row) {
   if (!row) return null;
-  return { ...row, published: Boolean(Number(row.published)), body: JSON.parse(row.body || '[]') };
+  const imageKey = contentImageKey(row.image_key);
+  return { ...row, image_key: imageKey, image_url: imagePublicUrl(imageKey), published: Boolean(Number(row.published)), body: JSON.parse(row.body || '[]') };
+}
+function adminUserToPublic(row) {
+  if (!row) return null;
+  return { id: row.id, email: row.email, name: row.name || '', active: Boolean(Number(row.active)), created_at: row.created_at, updated_at: row.updated_at || '', last_login_at: row.last_login_at || '' };
 }
 function cleanJobInput(body, existing = {}) {
   const title = asText(body.title ?? existing.title, 140);
@@ -249,10 +311,26 @@ function cleanArticleInput(body = {}, existing = {}) {
     ? body.body.map((item) => asText(item, 4000)).filter(Boolean).slice(0, 30)
     : String(body.body ?? oldBody.join('\n\n')).split(/\r?\n\s*\r?\n/).map((item) => asText(item, 4000)).filter(Boolean).slice(0, 30);
   const minutesValue = Number.parseInt(body.minutes ?? existing.minutes ?? '4', 10);
-  return { title, intro, category, slug, body: JSON.stringify(paragraphs), minutes: Math.min(30, Math.max(1, Number.isFinite(minutesValue) ? minutesValue : 4)), published: body.published === undefined ? Number(existing.published || 0) : (body.published ? 1 : 0) };
+  const existingImage = contentImageKey(existing.image_key);
+  const removeImage = asBoolean(body.remove_image);
+  const requestedImage = contentImageKey(body.image_key);
+  const imageKey = removeImage ? '' : (requestedImage || existingImage);
+  return { title, intro, category, slug, body: JSON.stringify(paragraphs), minutes: Math.min(30, Math.max(1, Number.isFinite(minutesValue) ? minutesValue : 4)), image_key: imageKey, image_alt: imageKey ? asText(body.image_alt ?? existing.image_alt, 300) : '', published: body.published === undefined ? Number(existing.published || 0) : (asBoolean(body.published) ? 1 : 0) };
 }
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
+
+// Imagens de conteúdo enviadas pelo painel. A chave é validada antes de tocar o disco.
+app.get('/media/content-images/:key', (req, res) => {
+  const key = contentImageKey(req.params.key);
+  const target = key ? path.resolve(contentImagesPath, key) : '';
+  if (!key || !target.startsWith(`${path.resolve(contentImagesPath)}${path.sep}`) || !fs.existsSync(target)) {
+    return res.status(404).json({ error: 'Imagem não encontrada.' });
+  }
+  res.setHeader('Cache-Control', 'public, max-age=604800');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.sendFile(target);
+});
 
 app.get('/api/articles', (req, res) => {
   const limit = Math.min(30, Math.max(1, Number.parseInt(req.query.limit || '12', 10) || 12));
@@ -368,6 +446,11 @@ app.post('/api/talent', talentLimiter, upload.single('resume'), (req, res) => {
     sendMessage({ to: email, subject: 'Seu perfil foi recebido • IM Personnel', text: `Olá, ${fullName}.\n\nSeu perfil foi incluído no banco de talentos da IM Personnel com sua autorização. Protocolo: ${ref}.\n\nVocê pode pedir a atualização ou remoção dos dados pelo canal de privacidade.` })
       .catch(() => console.warn('Falha ao enviar confirmação do banco de talentos.'));
   }
+  const talentNotification = process.env.LEADS_NOTIFICATION_EMAIL;
+  if (talentNotification && isEmailConfigured()) {
+    sendMessage({ to: talentNotification, replyTo: email, subject: `Novo perfil no banco de talentos • ${fullName} • ${ref}`, text: `Um currículo foi cadastrado no banco de talentos da IM Personnel.\n\nNome: ${fullName}\nÁrea de interesse: ${area}\nLocalidade: ${city}, ${state}\nProtocolo: ${ref}\n\nAcesse o painel administrativo para consultar os dados e baixar o currículo.` })
+      .catch(() => console.warn('Falha ao enviar notificação de novo perfil no banco de talentos.'));
+  }
   res.status(201).json({ ok: true, reference: ref, message: 'Seu perfil foi recebido. Você poderá solicitar a atualização ou remoção dos dados pelo canal de privacidade.' });
 });
 
@@ -449,21 +532,24 @@ app.post('/api/setup/initial-admin', initialAdminLimiter, (req, res) => {
 app.get('/api/admin/session', (req, res) => {
   const session = getSession(req);
   if (!session) return res.json({ authenticated: false });
-  res.json({ authenticated: true, csrf: session.csrf, user: { email: session.email } });
+  res.json({ authenticated: true, csrf: session.csrf, user: { email: session.email, name: session.name || '' } });
 });
 
 app.post('/api/admin/login', loginLimiter, (req, res) => {
   const email = asEmail(req.body?.email);
   const password = typeof req.body?.password === 'string' ? req.body.password : '';
-  const user = get('SELECT id, email, salt, password_hash FROM admin_users WHERE email = ?', [email]);
+  const user = get('SELECT id, email, name, salt, password_hash, active FROM admin_users WHERE email = ?', [email]);
   const passwordOkay = user ? verifyPassword(password, user.salt, user.password_hash) : false;
   if (!user || !passwordOkay) return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
+  if (!Number(user.active)) return res.status(403).json({ error: 'Esta conta administrativa está desativada. Procure quem gerencia os acessos do painel.' });
   const key = crypto.randomBytes(32).toString('hex');
   const csrf = crypto.randomBytes(24).toString('hex');
-  const session = { userId: user.id, email: user.email, csrf, expiresAt: Date.now() + 12 * 60 * 60 * 1000 };
+  const session = { userId: user.id, email: user.email, name: user.name || '', csrf, expiresAt: Date.now() + 12 * 60 * 60 * 1000 };
   sessions.set(key, session);
+  run('UPDATE admin_users SET last_login_at = ? WHERE id = ?', [nowIso(), user.id]);
+  persistDatabase();
   res.cookie('im_admin', key, { httpOnly: true, secure: isProduction, sameSite: 'strict', path: '/', maxAge: 12 * 60 * 60 * 1000 });
-  res.json({ authenticated: true, csrf, user: { email: user.email } });
+  res.json({ authenticated: true, csrf, user: { email: user.email, name: user.name || '' } });
 });
 
 app.post('/api/admin/logout', requireAdmin, requireCsrf, (req, res) => {
@@ -495,7 +581,7 @@ app.get('/api/admin/dashboard', requireAdmin, (_req, res) => {
     const month = publicationMap.get(event.created_at.slice(0, 7));
     if (month) month.total += 1;
   }
-  res.json({ counts, recent_applications: recentApplications, recent_leads: recentLeads, applications_by_job: applicationsByJob, publication_timeline: publicationMonths });
+  res.json({ counts, recent_applications: recentApplications, recent_leads: recentLeads, applications_by_job: applicationsByJob, publication_timeline: publicationMonths, email_configured: isEmailConfigured(), notification_email: process.env.LEADS_NOTIFICATION_EMAIL || '' });
 });
 
 app.get('/api/admin/jobs', requireAdmin, (req, res) => {
@@ -541,24 +627,61 @@ app.post('/api/admin/jobs/:id/duplicate', requireAdmin, requireCsrf, (req, res) 
 app.get('/api/admin/articles', requireAdmin, (_req, res) => {
   res.json({ items: all('SELECT * FROM articles ORDER BY updated_at DESC').map(articleToPublic) });
 });
-app.post('/api/admin/articles', requireAdmin, requireCsrf, (req, res) => {
-  const article = cleanArticleInput(req.body || {});
-  if (!article.title || !article.category || !article.intro || !article.body || !JSON.parse(article.body).length || !article.slug) return res.status(400).json({ error: 'Preencha título, categoria, resumo, slug e pelo menos um parágrafo.' });
-  if (get('SELECT id FROM articles WHERE slug = ?', [article.slug])) return res.status(409).json({ error: 'Já existe um conteúdo com este endereço amigável.' });
+app.post('/api/admin/articles', requireAdmin, requireCsrf, contentImageUpload.single('image'), (req, res) => {
+  const uploaded = req.file;
+  const body = { ...(req.body || {}) };
+  if (uploaded) {
+    if (!imageLooksValid(uploaded)) {
+      discardUpload(uploaded);
+      return res.status(400).json({ error: 'O arquivo enviado não parece ser uma imagem válida. Use JPG, PNG, WebP ou AVIF de até 5 MB.' });
+    }
+    body.image_key = path.basename(uploaded.filename);
+  }
+  const article = cleanArticleInput(body);
+  if (!article.title || !article.category || !article.intro || !article.body || !JSON.parse(article.body).length || !article.slug) {
+    discardUpload(uploaded);
+    return res.status(400).json({ error: 'Preencha título, categoria, resumo, slug e pelo menos um parágrafo.' });
+  }
+  if (get('SELECT id FROM articles WHERE slug = ?', [article.slug])) {
+    discardUpload(uploaded);
+    return res.status(409).json({ error: 'Já existe um conteúdo com este endereço amigável.' });
+  }
   const id = uuid(); const created = nowIso();
-  run('INSERT INTO articles (id, slug, category, title, intro, body, minutes, published, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [id, article.slug, article.category, article.title, article.intro, article.body, article.minutes, article.published, created, created]);
-  audit(req, 'article.created', 'article', id, { published: Boolean(article.published) });
+  run('INSERT INTO articles (id, slug, category, title, intro, body, minutes, image_key, image_alt, published, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [id, article.slug, article.category, article.title, article.intro, article.body, article.minutes, article.image_key, article.image_alt, article.published, created, created]);
+  persistDatabase();
+  audit(req, 'article.created', 'article', id, { published: Boolean(article.published), has_image: Boolean(article.image_key) });
   res.status(201).json({ article: articleToPublic(get('SELECT * FROM articles WHERE id = ?', [id])) });
 });
-app.put('/api/admin/articles/:id', requireAdmin, requireCsrf, (req, res) => {
+app.put('/api/admin/articles/:id', requireAdmin, requireCsrf, contentImageUpload.single('image'), (req, res) => {
   const existing = get('SELECT * FROM articles WHERE id = ?', [asText(req.params.id, 64)]);
-  if (!existing) return res.status(404).json({ error: 'Conteúdo não encontrado.' });
-  const article = cleanArticleInput(req.body || {}, existing);
-  if (!article.title || !article.category || !article.intro || !JSON.parse(article.body).length || !article.slug) return res.status(400).json({ error: 'Preencha título, categoria, resumo, slug e pelo menos um parágrafo.' });
-  if (get('SELECT id FROM articles WHERE slug = ? AND id <> ?', [article.slug, existing.id])) return res.status(409).json({ error: 'Já existe um conteúdo com este endereço amigável.' });
+  if (!existing) {
+    discardUpload(req.file);
+    return res.status(404).json({ error: 'Conteúdo não encontrado.' });
+  }
+  const uploaded = req.file;
+  const body = { ...(req.body || {}) };
+  if (uploaded) {
+    if (!imageLooksValid(uploaded)) {
+      discardUpload(uploaded);
+      return res.status(400).json({ error: 'O arquivo enviado não parece ser uma imagem válida. Use JPG, PNG, WebP ou AVIF de até 5 MB.' });
+    }
+    body.image_key = path.basename(uploaded.filename);
+  }
+  const article = cleanArticleInput(body, existing);
+  if (!article.title || !article.category || !article.intro || !JSON.parse(article.body).length || !article.slug) {
+    discardUpload(uploaded);
+    return res.status(400).json({ error: 'Preencha título, categoria, resumo, slug e pelo menos um parágrafo.' });
+  }
+  if (get('SELECT id FROM articles WHERE slug = ? AND id <> ?', [article.slug, existing.id])) {
+    discardUpload(uploaded);
+    return res.status(409).json({ error: 'Já existe um conteúdo com este endereço amigável.' });
+  }
   const updated = nowIso();
-  run('UPDATE articles SET slug=?, category=?, title=?, intro=?, body=?, minutes=?, published=?, updated_at=? WHERE id=?', [article.slug, article.category, article.title, article.intro, article.body, article.minutes, article.published, updated, existing.id]);
-  audit(req, 'article.updated', 'article', existing.id, { published: Boolean(article.published) });
+  run('UPDATE articles SET slug=?, category=?, title=?, intro=?, body=?, minutes=?, image_key=?, image_alt=?, published=?, updated_at=? WHERE id=?', [article.slug, article.category, article.title, article.intro, article.body, article.minutes, article.image_key, article.image_alt, article.published, updated, existing.id]);
+  persistDatabase();
+  const previousImage = contentImageKey(existing.image_key);
+  if (previousImage && previousImage !== article.image_key) discardContentImage(previousImage);
+  audit(req, 'article.updated', 'article', existing.id, { published: Boolean(article.published), has_image: Boolean(article.image_key), image_changed: previousImage !== article.image_key });
   res.json({ article: articleToPublic(get('SELECT * FROM articles WHERE id = ?', [existing.id])) });
 });
 
@@ -645,6 +768,58 @@ app.put('/api/admin/privacy-requests/:id', requireAdmin, requireCsrf, (req, res)
   run('UPDATE privacy_requests SET status = ?, internal_notes = ?, updated_at = ? WHERE id = ?', [status, asText(req.body?.internal_notes, 3000), nowIso(), existing.id]);
   audit(req, 'privacy_request.updated', 'privacy_request', existing.id, { status });
   res.json({ ok: true });
+});
+const adminUserColumns = 'id, email, name, active, created_at, updated_at, last_login_at';
+app.get('/api/admin/users', requireAdmin, (req, res) => {
+  const users = all(`SELECT ${adminUserColumns} FROM admin_users ORDER BY active DESC, created_at ASC`).map(adminUserToPublic);
+  res.json({ items: users, current_user_id: req.adminSession.userId });
+});
+app.post('/api/admin/users', requireAdmin, requireCsrf, (req, res) => {
+  const name = asText(req.body?.name, 160);
+  const email = asEmail(req.body?.email);
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  if (!name) return res.status(400).json({ error: 'Informe o nome de quem vai usar o painel.' });
+  if (!validEmail(email)) return res.status(400).json({ error: 'Informe um endereço de e-mail válido.' });
+  if (!strongAdminPassword(password)) return res.status(400).json({ error: 'A senha deve ter ao menos 14 caracteres, com letras maiúsculas, minúsculas e números.' });
+  if (get('SELECT id FROM admin_users WHERE email = ?', [email])) return res.status(409).json({ error: 'Já existe uma conta administrativa com este e-mail.' });
+  const active = req.body?.active === undefined ? true : Boolean(req.body.active);
+  const id = uuid(); const created = nowIso();
+  const { salt, digest } = hashPassword(password);
+  run('INSERT INTO admin_users (id, email, name, salt, password_hash, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [id, email, name, salt, digest, active ? 1 : 0, created, created]);
+  persistDatabase();
+  audit(req, 'admin_user.created', 'admin_user', id, { email, name, active });
+  res.status(201).json({ user: adminUserToPublic(get(`SELECT ${adminUserColumns} FROM admin_users WHERE id = ?`, [id])) });
+});
+app.put('/api/admin/users/:id', requireAdmin, requireCsrf, (req, res) => {
+  const existing = get('SELECT id, email, name, salt, password_hash, active FROM admin_users WHERE id = ?', [asText(req.params.id, 64)]);
+  if (!existing) return res.status(404).json({ error: 'Usuário não encontrado.' });
+  // O nome só é obrigatório quando vem no corpo: alternar acesso de uma conta antiga (sem nome) não pode falhar.
+  const name = asText(req.body?.name ?? existing.name, 160);
+  if (req.body?.name !== undefined && !name) return res.status(400).json({ error: 'Informe o nome de quem vai usar o painel.' });
+  const wasActive = Boolean(Number(existing.active));
+  const nextActive = req.body?.active === undefined ? wasActive : Boolean(req.body.active);
+  const isSelf = existing.id === req.adminSession.userId;
+  if (isSelf && !nextActive) return res.status(409).json({ error: 'Você não pode desativar a sua própria conta. Peça a outra pessoa administradora.' });
+  if (wasActive && !nextActive) {
+    const otherActive = Number(get('SELECT COUNT(*) AS count FROM admin_users WHERE active = 1 AND id <> ?', [existing.id])?.count || 0);
+    if (otherActive === 0) return res.status(409).json({ error: 'Mantenha ao menos uma conta administrativa ativa. Ative outra pessoa antes de desativar esta.' });
+  }
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  let salt = existing.salt;
+  let passwordHash = existing.password_hash;
+  if (password) {
+    if (!strongAdminPassword(password)) return res.status(400).json({ error: 'A senha deve ter ao menos 14 caracteres, com letras maiúsculas, minúsculas e números.' });
+    const hashed = hashPassword(password);
+    salt = hashed.salt; passwordHash = hashed.digest;
+  }
+  run('UPDATE admin_users SET name=?, salt=?, password_hash=?, active=?, updated_at=? WHERE id=?', [name, salt, passwordHash, nextActive ? 1 : 0, nowIso(), existing.id]);
+  persistDatabase();
+  if (!nextActive) for (const [key, session] of sessions) if (session.userId === existing.id) sessions.delete(key);
+  const action = wasActive === nextActive ? (password ? 'admin_user.password_reset' : 'admin_user.updated') : (nextActive ? 'admin_user.activated' : 'admin_user.deactivated');
+  audit(req, action, 'admin_user', existing.id, { email: existing.email, name, active: nextActive, password_changed: Boolean(password) });
+  // Troca de senha merece evento próprio na trilha, mesmo quando vem junto de outra alteração.
+  if (password && action !== 'admin_user.password_reset') audit(req, 'admin_user.password_reset', 'admin_user', existing.id, { email: existing.email });
+  res.json({ user: adminUserToPublic(get(`SELECT ${adminUserColumns} FROM admin_users WHERE id = ?`, [existing.id])) });
 });
 app.get('/api/admin/audit', requireAdmin, (_req, res) => {
   res.json({ items: all('SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 200') });
