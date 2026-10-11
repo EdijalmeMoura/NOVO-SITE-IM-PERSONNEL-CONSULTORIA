@@ -11,8 +11,10 @@ import { createServer as createViteServer } from 'vite';
 import { all, databaseFilePath, get, initializeDatabase, persistDatabase, run } from './db.mjs';
 import { hashPassword, verifyPassword } from './auth.mjs';
 import { ensureBootstrapAdmin } from './bootstrap.mjs';
-import { isEmailConfigured, sendMessage } from './mailer.mjs';
+import { emailSettings, isEmailConfigured, renderTemplate, resetMailer, sendMessage, sendTemplate, verifyTransport } from './mailer.mjs';
 import insightDefaults from '../content/insights.json' with { type: 'json' };
+import heroSlideDefaults from '../content/hero-slides.json' with { type: 'json' };
+import emailTemplateDefaults from '../content/email-templates.json' with { type: 'json' };
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const configuredDataDir = (process.env.DATA_DIR || '').trim();
@@ -98,6 +100,22 @@ if (Number(get('SELECT COUNT(*) AS count FROM articles')?.count || 0) === 0) {
   for (const article of insightDefaults) {
     const id = uuid();
     run('INSERT INTO articles (id, slug, category, title, intro, body, minutes, published, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)', [id, article.slug, article.category, article.title, article.intro, JSON.stringify(article.body), article.minutes, created, created]);
+  }
+  persistDatabase();
+}
+if (Number(get('SELECT COUNT(*) AS count FROM hero_slides')?.count || 0) === 0) {
+  const created = nowIso();
+  heroSlideDefaults.forEach((slide, index) => {
+    run(`INSERT INTO hero_slides (id, slug, eyebrow, location, side_label, navigation_label, title, body_text, primary_label, primary_to, secondary_label, secondary_to, footnote, image_position, image_alt, image_key, position, active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, 1, ?, ?)`,
+      [uuid(), slide.slug, slide.eyebrow, slide.location, slide.sideLabel, slide.navigationLabel, JSON.stringify(slide.title), slide.text, slide.primary.label, slide.primary.to, slide.secondary.label, slide.secondary.to, slide.footnote, slide.imagePosition, slide.imageAlt, index, created, created]);
+  });
+  persistDatabase();
+}
+if (Number(get('SELECT COUNT(*) AS count FROM email_templates')?.count || 0) === 0) {
+  const created = nowIso();
+  for (const template of emailTemplateDefaults) {
+    run('INSERT INTO email_templates (key, label, audience, subject, body, enabled, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?)', [template.key, template.label, template.audience, template.subject, template.body, created]);
   }
   persistDatabase();
 }
@@ -217,6 +235,11 @@ function discardContentImage(key) {
 function imagePublicUrl(key) {
   return key ? `/media/content-images/${key}` : '';
 }
+const INVALID_IMAGE_MESSAGE = 'O arquivo enviado não parece ser uma imagem válida. Use JPG, PNG, WebP ou AVIF de até 5 MB.';
+// Valores usados no botão "ver prévia" dos modelos de e-mail.
+const SAMPLE_VARIABLES = { nome: 'Maria Silva', email: 'maria@exemplo.com.br', telefone: '(81) 99999-0000', vaga: 'Analista de Recursos Humanos', empresa: 'Indústria Exemplo', servico: 'Recrutamento e Seleção', area: 'Recursos Humanos', cidade: 'Recife', estado: 'PE', tipo: 'Acesso aos dados', protocolo: 'IM-EXEMPLO1' };
+const sampleVariable = (name) => SAMPLE_VARIABLES[name] || `{{${name}}}`;
+const PLACEHOLDER_PATTERN = /\{\{\s*([\w.]+)\s*\}\}/g;
 function parseCookie(req, name) {
   const cookies = (req.headers.cookie || '').split(';');
   const entry = cookies.map((value) => value.trim()).find((value) => value.startsWith(`${name}=`));
@@ -275,6 +298,87 @@ function articleToPublic(row) {
 function adminUserToPublic(row) {
   if (!row) return null;
   return { id: row.id, email: row.email, name: row.name || '', active: Boolean(Number(row.active)), created_at: row.created_at, updated_at: row.updated_at || '', last_login_at: row.last_login_at || '' };
+}
+const DEFAULT_HERO_IMAGE = '/images/hero-team.jpg';
+const templateVariables = new Map(emailTemplateDefaults.map((template) => [template.key, template.variables || []]));
+function slideTitleLines(rawTitle) {
+  try {
+    const parsed = JSON.parse(rawTitle || '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((line) => line && String(line.text || '').trim()).map((line) => ({ text: String(line.text), accent: Boolean(line.accent) }));
+  } catch { return []; }
+}
+function slideToPublic(row) {
+  if (!row) return null;
+  const lines = slideTitleLines(row.title);
+  const imageKey = contentImageKey(row.image_key);
+  return {
+    id: row.id,
+    slug: row.slug,
+    eyebrow: row.eyebrow || '',
+    location: row.location || '',
+    sideLabel: row.side_label || '',
+    navigationLabel: row.navigation_label || row.eyebrow || 'Destaque',
+    title: lines,
+    text: row.body_text || '',
+    primary: { to: row.primary_to || '/', label: row.primary_label || '' },
+    secondary: { to: row.secondary_to || '/', label: row.secondary_label || '' },
+    footnote: row.footnote || '',
+    imagePosition: row.image_position || 'center 52%',
+    imageAlt: row.image_alt || '',
+    imageKey,
+    imageUrl: imageKey ? imagePublicUrl(imageKey) : DEFAULT_HERO_IMAGE,
+    accentLine: lines.findIndex((line) => line.accent) + 1 || '',
+    position: Number(row.position || 0),
+    active: Boolean(Number(row.active)),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+function cleanSlideInput(body = {}, existing = {}) {
+  const existingLines = slideTitleLines(existing.title);
+  const rawLines = Array.isArray(body.title)
+    ? body.title.map((line) => asText(typeof line === 'string' ? line : line?.text, 200)).filter(Boolean)
+    : String(body.title ?? existingLines.map((line) => line.text).join('\n')).split(/\r?\n/).map((line) => asText(line, 200)).filter(Boolean);
+  const accentLine = body.accent_line === undefined ? (existingLines.findIndex((line) => line.accent) + 1) : Number.parseInt(body.accent_line, 10);
+  const title = rawLines.slice(0, 6).map((text, index) => ({ text, accent: Number.isFinite(accentLine) && accentLine === index + 1 }));
+  const existingImage = contentImageKey(existing.image_key);
+  const imageKey = asBoolean(body.remove_image) ? '' : (contentImageKey(body.image_key) || existingImage);
+  const position = Number.parseInt(body.position ?? existing.position ?? 0, 10);
+  return {
+    eyebrow: asText(body.eyebrow ?? existing.eyebrow, 120),
+    location: asText(body.location ?? existing.location, 120),
+    side_label: asText(body.side_label ?? existing.side_label, 120),
+    navigation_label: asText(body.navigation_label ?? existing.navigation_label, 160),
+    title: JSON.stringify(title),
+    body_text: asText(body.text ?? existing.body_text, 600),
+    primary_label: asText(body.primary_label ?? existing.primary_label, 80),
+    primary_to: asText(body.primary_to ?? existing.primary_to, 300),
+    secondary_label: asText(body.secondary_label ?? existing.secondary_label, 80),
+    secondary_to: asText(body.secondary_to ?? existing.secondary_to, 300),
+    footnote: asText(body.footnote ?? existing.footnote, 200),
+    image_position: asText(body.image_position ?? existing.image_position, 40) || 'center 52%',
+    image_alt: imageKey || body.image_alt !== undefined ? asText(body.image_alt ?? existing.image_alt, 300) : (existing.image_alt || ''),
+    image_key: imageKey,
+    position: Number.isFinite(position) ? Math.min(99, Math.max(0, position)) : 0,
+    active: body.active === undefined ? Number(existing.active ?? 1) : (asBoolean(body.active) ? 1 : 0),
+  };
+}
+function validateSlide(slide) {
+  if (!slide.eyebrow) return 'Preencha a etiqueta do destaque (texto pequeno acima do título).';
+  if (!slide.navigation_label) return 'Preencha o nome usado na navegação e em leitores de tela.';
+  if (!JSON.parse(slide.title).length) return 'Informe ao menos uma linha de título.';
+  if (!slide.body_text) return 'Informe o texto de apoio do destaque.';
+  if (!slide.primary_label || !slide.primary_to) return 'Informe o texto e o destino do botão principal.';
+  // Destinos internos evitam redirecionamento para fora do site.
+  for (const target of [slide.primary_to, slide.secondary_to]) {
+    if (target && !/^\/[^\s]*$/.test(target)) return 'Os destinos dos botões devem ser caminhos internos começando com /.';
+  }
+  return null;
+}
+function setSetting(key, value) {
+  if (get('SELECT key FROM settings WHERE key = ?', [key])) run('UPDATE settings SET value = ?, updated_at = ? WHERE key = ?', [value, nowIso(), key]);
+  else run('INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)', [key, value, nowIso()]);
 }
 function cleanJobInput(body, existing = {}) {
   const title = asText(body.title ?? existing.title, 140);
@@ -343,6 +447,12 @@ app.get('/api/articles/:slug', (req, res) => {
   res.json({ article: articleToPublic(row) });
 });
 
+// Destaques da página inicial, editáveis no painel. Somente os ativos são públicos.
+app.get('/api/hero-slides', (_req, res) => {
+  const items = all('SELECT * FROM hero_slides WHERE active = 1 ORDER BY position ASC, created_at ASC').map(slideToPublic);
+  res.json({ items, total: items.length });
+});
+
 app.get('/api/jobs', (req, res) => {
   const page = Math.max(1, Number.parseInt(req.query.page || '1', 10) || 1);
   const perPage = Math.min(24, Math.max(1, Number.parseInt(req.query.per_page || '9', 10) || 9));
@@ -409,13 +519,14 @@ app.post('/api/applications', applicationLimiter, upload.single('resume'), async
   persistDatabase();
   const ref = reference(id);
   if (isEmailConfigured()) {
-    sendMessage({ to: email, subject: 'Recebemos sua candidatura • IM Personnel', text: `Olá, ${fullName}.\n\nSua candidatura para ${job.title} foi recebida pelo portal da IM Personnel. Protocolo: ${ref}.\n\nEsta mensagem confirma o recebimento e não representa uma decisão sobre o processo seletivo.` })
+    const variables = { nome: fullName, email, telefone: phone, vaga: job.title, protocolo: ref, cidade: city, estado: state };
+    sendTemplate({ key: 'application_candidate', to: email, variables })
       .catch(() => console.warn('Falha ao enviar confirmação de candidatura.'));
-  }
-  const notification = process.env.LEADS_NOTIFICATION_EMAIL;
-  if (notification && isEmailConfigured()) {
-    sendMessage({ to: notification, replyTo: email, subject: `Nova candidatura • ${job.title} • ${ref}`, text: `Uma candidatura foi registrada no portal da IM Personnel.\n\nVaga: ${job.title}\nProtocolo: ${ref}\nAcesse o painel administrativo para consultar os dados e o currículo.` })
-      .catch(() => console.warn('Falha ao enviar notificação de candidatura.'));
+    const notification = emailSettings().notification;
+    if (notification) {
+      sendTemplate({ key: 'application_team', to: notification, replyTo: email, variables })
+        .catch(() => console.warn('Falha ao enviar notificação de candidatura.'));
+    }
   }
   res.status(201).json({ ok: true, reference: ref, message: 'Sua candidatura foi recebida. Obrigado por compartilhar seu perfil com a IM Personnel.' });
 });
@@ -443,13 +554,14 @@ app.post('/api/talent', talentLimiter, upload.single('resume'), (req, res) => {
   persistDatabase();
   const ref = reference(id);
   if (isEmailConfigured()) {
-    sendMessage({ to: email, subject: 'Seu perfil foi recebido • IM Personnel', text: `Olá, ${fullName}.\n\nSeu perfil foi incluído no banco de talentos da IM Personnel com sua autorização. Protocolo: ${ref}.\n\nVocê pode pedir a atualização ou remoção dos dados pelo canal de privacidade.` })
+    const variables = { nome: fullName, email, telefone: phone, area, cidade: city, estado: state, protocolo: ref };
+    sendTemplate({ key: 'talent_candidate', to: email, variables })
       .catch(() => console.warn('Falha ao enviar confirmação do banco de talentos.'));
-  }
-  const talentNotification = process.env.LEADS_NOTIFICATION_EMAIL;
-  if (talentNotification && isEmailConfigured()) {
-    sendMessage({ to: talentNotification, replyTo: email, subject: `Novo perfil no banco de talentos • ${fullName} • ${ref}`, text: `Um currículo foi cadastrado no banco de talentos da IM Personnel.\n\nNome: ${fullName}\nÁrea de interesse: ${area}\nLocalidade: ${city}, ${state}\nProtocolo: ${ref}\n\nAcesse o painel administrativo para consultar os dados e baixar o currículo.` })
-      .catch(() => console.warn('Falha ao enviar notificação de novo perfil no banco de talentos.'));
+    const notification = emailSettings().notification;
+    if (notification) {
+      sendTemplate({ key: 'talent_team', to: notification, replyTo: email, variables })
+        .catch(() => console.warn('Falha ao enviar notificação de novo perfil no banco de talentos.'));
+    }
   }
   res.status(201).json({ ok: true, reference: ref, message: 'Seu perfil foi recebido. Você poderá solicitar a atualização ou remoção dos dados pelo canal de privacidade.' });
 });
@@ -472,13 +584,14 @@ app.post('/api/leads', leadLimiter, async (req, res) => {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [id, values.contact_name, values.contact_role, values.company, values.email, values.phone, values.segment, values.city, values.state, values.service, values.position_count, values.need, values.desired_timeline, created, created]);
   persistDatabase();
   if (isEmailConfigured()) {
-    sendMessage({ to: values.email, subject: `Recebemos sua solicitação • ${reference(id)}`, text: `Olá, ${values.contact_name}.\n\nSua solicitação sobre ${values.service} foi registrada pela IM Personnel. Protocolo: ${reference(id)}.\n\nA equipe poderá retornar pelos dados informados.` })
+    const variables = { nome: values.contact_name, email: values.email, telefone: values.phone, empresa: values.company, servico: values.service, cidade: values.city, estado: values.state, protocolo: reference(id) };
+    sendTemplate({ key: 'lead_customer', to: values.email, variables })
       .catch(() => console.warn('Falha ao enviar confirmação de solicitação empresarial.'));
-  }
-  const notification = process.env.LEADS_NOTIFICATION_EMAIL;
-  if (notification && isEmailConfigured()) {
-    sendMessage({ to: notification, replyTo: values.email, subject: `Nova solicitação empresarial • ${values.company} • ${reference(id)}`, text: `Nova solicitação recebida pelo site da IM Personnel.\n\nEmpresa: ${values.company}\nContato: ${values.contact_name}\nServiço: ${values.service}\nProtocolo: ${reference(id)}\n\nAcesse o painel administrativo para acompanhar este lead.` })
-      .catch(() => console.warn('Falha ao enviar notificação de lead.'));
+    const notification = emailSettings().notification;
+    if (notification) {
+      sendTemplate({ key: 'lead_team', to: notification, replyTo: values.email, variables })
+        .catch(() => console.warn('Falha ao enviar notificação de lead.'));
+    }
   }
   res.status(201).json({ ok: true, reference: reference(id), message: 'Sua solicitação foi registrada. A equipe da IM Personnel poderá entrar em contato pelos dados informados.' });
 });
@@ -495,7 +608,7 @@ app.post('/api/privacy-requests', privacyLimiter, (req, res) => {
   persistDatabase();
   const ref = reference(id);
   if (isEmailConfigured()) {
-    sendMessage({ to: email, subject: `Solicitação de privacidade recebida • ${ref}`, text: `Olá, ${fullName}.\n\nRecebemos sua solicitação relativa a dados pessoais. Protocolo: ${ref}.\n\nA equipe responsável poderá entrar em contato para dar andamento ao pedido.` })
+    sendTemplate({ key: 'privacy_customer', to: email, variables: { nome: fullName, email, tipo: requestType, protocolo: ref } })
       .catch(() => console.warn('Falha ao enviar confirmação de solicitação de privacidade.'));
   }
   res.status(201).json({ ok: true, reference: ref, message: 'Sua solicitação foi registrada para análise.' });
@@ -581,7 +694,7 @@ app.get('/api/admin/dashboard', requireAdmin, (_req, res) => {
     const month = publicationMap.get(event.created_at.slice(0, 7));
     if (month) month.total += 1;
   }
-  res.json({ counts, recent_applications: recentApplications, recent_leads: recentLeads, applications_by_job: applicationsByJob, publication_timeline: publicationMonths, email_configured: isEmailConfigured(), notification_email: process.env.LEADS_NOTIFICATION_EMAIL || '' });
+  res.json({ counts, recent_applications: recentApplications, recent_leads: recentLeads, applications_by_job: applicationsByJob, publication_timeline: publicationMonths, email_configured: isEmailConfigured(), notification_email: emailSettings().notification });
 });
 
 app.get('/api/admin/jobs', requireAdmin, (req, res) => {
@@ -823,6 +936,165 @@ app.put('/api/admin/users/:id', requireAdmin, requireCsrf, (req, res) => {
 });
 app.get('/api/admin/audit', requireAdmin, (_req, res) => {
   res.json({ items: all('SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 200') });
+});
+
+const slideColumns = 'eyebrow, location, side_label, navigation_label, title, body_text, primary_label, primary_to, secondary_label, secondary_to, footnote, image_position, image_alt, image_key, position, active';
+app.get('/api/admin/hero-slides', requireAdmin, (_req, res) => {
+  res.json({ items: all('SELECT * FROM hero_slides ORDER BY position ASC, created_at ASC').map(slideToPublic) });
+});
+app.post('/api/admin/hero-slides', requireAdmin, requireCsrf, contentImageUpload.single('image'), (req, res) => {
+  const uploaded = req.file;
+  const body = { ...(req.body || {}) };
+  if (uploaded) {
+    if (!imageLooksValid(uploaded)) { discardUpload(uploaded); return res.status(400).json({ error: INVALID_IMAGE_MESSAGE }); }
+    body.image_key = path.basename(uploaded.filename);
+  }
+  const slide = cleanSlideInput(body);
+  const invalid = validateSlide(slide);
+  if (invalid) { discardUpload(uploaded); return res.status(400).json({ error: invalid }); }
+  const id = uuid(); const created = nowIso();
+  const slug = `${slugify(slide.navigation_label) || 'destaque'}-${id.slice(0, 6)}`;
+  if (get('SELECT id FROM hero_slides WHERE slug = ?', [slug])) { discardUpload(uploaded); return res.status(409).json({ error: 'Já existe um destaque com este identificador.' }); }
+  const total = Number(get('SELECT COUNT(*) AS count FROM hero_slides')?.count || 0);
+  const position = body.position === undefined ? total : slide.position;
+  run(`INSERT INTO hero_slides (id, slug, ${slideColumns}, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, slug, slide.eyebrow, slide.location, slide.side_label, slide.navigation_label, slide.title, slide.body_text, slide.primary_label, slide.primary_to, slide.secondary_label, slide.secondary_to, slide.footnote, slide.image_position, slide.image_alt, slide.image_key, position, slide.active, created, created]);
+  persistDatabase();
+  audit(req, 'hero_slide.created', 'hero_slide', id, { active: Boolean(slide.active) });
+  res.status(201).json({ slide: slideToPublic(get('SELECT * FROM hero_slides WHERE id = ?', [id])) });
+});
+app.put('/api/admin/hero-slides/:id', requireAdmin, requireCsrf, contentImageUpload.single('image'), (req, res) => {
+  const existing = get('SELECT * FROM hero_slides WHERE id = ?', [asText(req.params.id, 64)]);
+  if (!existing) { discardUpload(req.file); return res.status(404).json({ error: 'Destaque não encontrado.' }); }
+  const uploaded = req.file;
+  const body = { ...(req.body || {}) };
+  if (uploaded) {
+    if (!imageLooksValid(uploaded)) { discardUpload(uploaded); return res.status(400).json({ error: INVALID_IMAGE_MESSAGE }); }
+    body.image_key = path.basename(uploaded.filename);
+  }
+  const slide = cleanSlideInput(body, existing);
+  const invalid = validateSlide(slide);
+  if (invalid) { discardUpload(uploaded); return res.status(400).json({ error: invalid }); }
+  run(`UPDATE hero_slides SET eyebrow=?, location=?, side_label=?, navigation_label=?, title=?, body_text=?, primary_label=?, primary_to=?, secondary_label=?, secondary_to=?, footnote=?, image_position=?, image_alt=?, image_key=?, position=?, active=?, updated_at=? WHERE id=?`,
+    [slide.eyebrow, slide.location, slide.side_label, slide.navigation_label, slide.title, slide.body_text, slide.primary_label, slide.primary_to, slide.secondary_label, slide.secondary_to, slide.footnote, slide.image_position, slide.image_alt, slide.image_key, slide.position, slide.active, nowIso(), existing.id]);
+  persistDatabase();
+  const previousImage = contentImageKey(existing.image_key);
+  if (previousImage && previousImage !== slide.image_key) discardContentImage(previousImage);
+  audit(req, 'hero_slide.updated', 'hero_slide', existing.id, { active: Boolean(slide.active), image_changed: previousImage !== slide.image_key });
+  res.json({ slide: slideToPublic(get('SELECT * FROM hero_slides WHERE id = ?', [existing.id])) });
+});
+app.post('/api/admin/hero-slides/reorder', requireAdmin, requireCsrf, (req, res) => {
+  const order = Array.isArray(req.body?.order) ? req.body.order.map((id) => asText(id, 64)).filter(Boolean) : [];
+  if (!order.length) return res.status(400).json({ error: 'Informe a nova ordem dos destaques.' });
+  const known = new Set(all('SELECT id FROM hero_slides').map((row) => row.id));
+  if (order.length !== known.size || !order.every((id) => known.has(id))) return res.status(400).json({ error: 'A nova ordem precisa listar exatamente os destaques existentes.' });
+  order.forEach((id, index) => run('UPDATE hero_slides SET position = ?, updated_at = ? WHERE id = ?', [index, nowIso(), id]));
+  persistDatabase();
+  audit(req, 'hero_slide.reordered', 'hero_slide', 'reorder', { count: order.length });
+  res.json({ items: all('SELECT * FROM hero_slides ORDER BY position ASC, created_at ASC').map(slideToPublic) });
+});
+app.delete('/api/admin/hero-slides/:id', requireAdmin, requireCsrf, (req, res) => {
+  const existing = get('SELECT id, image_key FROM hero_slides WHERE id = ?', [asText(req.params.id, 64)]);
+  if (!existing) return res.status(404).json({ error: 'Destaque não encontrado.' });
+  if (Number(get('SELECT COUNT(*) AS count FROM hero_slides')?.count || 0) <= 1) return res.status(409).json({ error: 'Mantenha ao menos um destaque na página inicial. Prefira desativar.' });
+  audit(req, 'hero_slide.deleted', 'hero_slide', existing.id);
+  run('DELETE FROM hero_slides WHERE id = ?', [existing.id]);
+  persistDatabase();
+  discardContentImage(existing.image_key);
+  res.json({ ok: true });
+});
+
+const EMAIL_SETTING_LIMITS = { SMTP_HOST: 253, SMTP_PORT: 5, SMTP_SECURE: 5, SMTP_USER: 254, SMTP_PASS: 512, EMAIL_FROM: 254, LEADS_NOTIFICATION_EMAIL: 254 };
+app.get('/api/admin/email-settings', requireAdmin, (_req, res) => {
+  const settings = emailSettings();
+  // Só conta como "definido no painel" o que foi gravado com valor; campo limpo volta a usar o ambiente.
+  const storedInPanel = all('SELECT key, value FROM settings')
+    .filter((row) => row.key in EMAIL_SETTING_LIMITS && String(row.value ?? '').trim() !== '')
+    .map((row) => row.key);
+  res.json({
+    SMTP_HOST: settings.host, SMTP_PORT: settings.port, SMTP_SECURE: settings.secure, SMTP_USER: settings.user,
+    SMTP_PASS_SET: Boolean(settings.pass), EMAIL_FROM: settings.from, LEADS_NOTIFICATION_EMAIL: settings.notification,
+    configured: isEmailConfigured(), stored_in_panel: storedInPanel,
+    templates: all('SELECT key, label, audience, subject, body, enabled, updated_at FROM email_templates ORDER BY rowid ASC').map((row) => ({ ...row, enabled: Boolean(Number(row.enabled)), variables: templateVariables.get(row.key) || [] })),
+  });
+});
+app.put('/api/admin/email-settings', requireAdmin, requireCsrf, (req, res) => {
+  const body = req.body || {};
+  const changes = {};
+  for (const key of Object.keys(EMAIL_SETTING_LIMITS)) {
+    if (body[key] === undefined) continue;
+    // O painel envia SMTP_SECURE como booleano e SMTP_PORT como número; asText só aproveita texto.
+    const received = body[key];
+    let value = asText(typeof received === 'boolean' || typeof received === 'number' ? String(received) : received, EMAIL_SETTING_LIMITS[key]);
+    if (key === 'SMTP_PORT' && value) {
+      const port = Number.parseInt(value, 10);
+      if (!/^\d{1,5}$/.test(value) || port < 1 || port > 65535) return res.status(400).json({ error: 'A porta SMTP deve ser um número entre 1 e 65535.' });
+    }
+    if (key === 'SMTP_SECURE') value = asBoolean(value) ? 'true' : 'false';
+    if (key === 'EMAIL_FROM' && value && !/^[^@\s]+@[^@\s]+$/.test(value.replace(/^[^<]*<([^>]*)>$/, '$1'))) return res.status(400).json({ error: 'Informe um remetente válido, como IM Personnel <contato@dominio.com.br>.' });
+    if (key === 'LEADS_NOTIFICATION_EMAIL' && value && !validEmail(value)) return res.status(400).json({ error: 'Informe um e-mail válido para receber os avisos da equipe.' });
+    setSetting(key, value);
+    // A senha nunca volta em resposta nem entra na trilha de auditoria.
+    changes[key] = key === 'SMTP_PASS' ? (value ? 'definida' : 'removida') : value;
+  }
+  if (!Object.keys(changes).length) return res.status(400).json({ error: 'Nenhuma configuração foi enviada.' });
+  persistDatabase();
+  resetMailer();
+  audit(req, 'email_settings.updated', 'settings', 'email', changes);
+  // Devolve o mesmo retrato do GET (sem os modelos) para o painel atualizar sem nova consulta.
+  const updated = emailSettings();
+  res.json({
+    ok: true,
+    SMTP_HOST: updated.host, SMTP_PORT: updated.port, SMTP_SECURE: updated.secure, SMTP_USER: updated.user,
+    SMTP_PASS_SET: Boolean(updated.pass), EMAIL_FROM: updated.from, LEADS_NOTIFICATION_EMAIL: updated.notification,
+    configured: isEmailConfigured(),
+    stored_in_panel: all('SELECT key, value FROM settings')
+      .filter((row) => row.key in EMAIL_SETTING_LIMITS && String(row.value ?? '').trim() !== '')
+      .map((row) => row.key),
+  });
+});
+app.post('/api/admin/email-settings/test', requireAdmin, requireCsrf, async (req, res) => {
+  const settings = emailSettings();
+  const to = asEmail(req.body?.to) || settings.notification || settings.from.replace(/^[^<]*<([^>]*)>$/, '$1');
+  if (!validEmail(to)) return res.status(400).json({ error: 'Informe um destinatário válido para o teste.' });
+  if (!isEmailConfigured()) return res.status(400).json({ error: 'Configure o servidor SMTP e o remetente antes de testar.' });
+  const redact = (message) => (settings.pass ? message.split(settings.pass).join('***') : message);
+  try {
+    await verifyTransport();
+    const sent = await sendMessage({ to, subject: 'Teste de configuração de e-mail • IM Personnel', text: `Mensagem de teste enviada pelo painel administrativo em ${new Intl.DateTimeFormat('pt-BR', { dateStyle: 'long', timeStyle: 'short' }).format(new Date())}.\n\nSe você recebeu esta mensagem, o SMTP está configurado corretamente.` });
+    audit(req, 'email_settings.test_sent', 'settings', 'email', { to });
+    res.json({ ok: Boolean(sent), message: `Enviamos uma mensagem de teste para ${to}.` });
+  } catch (error) {
+    res.status(400).json({ error: `Não foi possível enviar o teste: ${redact(error?.message || 'falha desconhecida')}` });
+  }
+});
+app.get('/api/admin/email-templates', requireAdmin, (_req, res) => {
+  res.json({ items: all('SELECT key, label, audience, subject, body, enabled, updated_at FROM email_templates ORDER BY rowid ASC').map((row) => ({ ...row, enabled: Boolean(Number(row.enabled)), variables: templateVariables.get(row.key) || [] })) });
+});
+app.put('/api/admin/email-templates/:key', requireAdmin, requireCsrf, (req, res) => {
+  const existing = get('SELECT key, subject, body, enabled FROM email_templates WHERE key = ?', [asText(req.params.key, 60)]);
+  if (!existing) return res.status(404).json({ error: 'Modelo não encontrado.' });
+  const subject = asText(req.body?.subject ?? existing.subject, 200);
+  const body = typeof req.body?.body === 'string' ? req.body.body.slice(0, 4000) : existing.body;
+  const enabled = req.body?.enabled === undefined ? Boolean(Number(existing.enabled)) : asBoolean(req.body.enabled);
+  if (!subject) return res.status(400).json({ error: 'O assunto não pode ficar vazio.' });
+  const available = templateVariables.get(existing.key) || [];
+  const used = [...new Set([...`${subject}\n${body}`.matchAll(PLACEHOLDER_PATTERN)].map((match) => match[1]))];
+  const unknown = used.filter((name) => !available.includes(name));
+  if (unknown.length) return res.status(400).json({ error: `Variáveis desconhecidas: ${unknown.map((name) => `{{${name}}}`).join(', ')}. Disponíveis neste modelo: ${available.map((name) => `{{${name}}}`).join(', ')}.` });
+  run('UPDATE email_templates SET subject=?, body=?, enabled=?, updated_at=? WHERE key=?', [subject, body, enabled ? 1 : 0, nowIso(), existing.key]);
+  persistDatabase();
+  audit(req, 'email_template.updated', 'email_template', existing.key, { enabled });
+  const saved = get('SELECT key, label, audience, subject, body, enabled, updated_at FROM email_templates WHERE key = ?', [existing.key]);
+  res.json({ template: { ...saved, enabled: Boolean(Number(saved.enabled)), variables: available } });
+});
+app.post('/api/admin/email-templates/:key/preview', requireAdmin, requireCsrf, (req, res) => {
+  const existing = get('SELECT key, subject, body FROM email_templates WHERE key = ?', [asText(req.params.key, 60)]);
+  if (!existing) return res.status(404).json({ error: 'Modelo não encontrado.' });
+  const variables = Object.fromEntries((templateVariables.get(existing.key) || []).map((name) => [name, sampleVariable(name)]));
+  const overrides = req.body?.variables && typeof req.body.variables === 'object' ? req.body.variables : {};
+  for (const [name, value] of Object.entries(overrides)) if (name in variables) variables[name] = asText(value, 200);
+  res.json({ subject: renderTemplate(existing.subject, variables), body: renderTemplate(existing.body, variables), variables });
 });
 app.get('/api/admin/files/:key', requireAdmin, (req, res) => {
   const key = asText(req.params.key, 64);

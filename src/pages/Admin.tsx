@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { Activity, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUpRight, Ban, BookOpenText, BriefcaseBusiness, Check, ChevronDown, CircleCheck, ClipboardList, FilePlus2, FileText, ImagePlus, LayoutDashboard, LockKeyhole, LogOut, MailWarning, Plus, Search, Shield, ShieldCheck, Trash2, UserCog, UsersRound, UserRoundSearch, X } from 'lucide-react';
+import { Activity, ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, ArrowUpRight, Ban, BookOpenText, BriefcaseBusiness, Check, ChevronDown, CircleCheck, ClipboardList, Eye, FilePlus2, FileText, ImagePlus, LayoutDashboard, LockKeyhole, LogOut, Mail, MailWarning, Plus, Presentation, Search, Send, Shield, ShieldCheck, Trash2, UserCog, UsersRound, UserRoundSearch, X } from 'lucide-react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { apiAdminForm, apiDelete, apiGet, apiPost, apiPut, formatDate, setCsrfToken, type AdminSession, type AdminUser, type Job } from '../lib/api';
 import { Logo } from '../components/Logo';
-import type { Insight } from '../data';
+import type { HeroSlide, Insight } from '../data';
 
 const menu = [
   { path: 'dashboard', label: 'Visão geral', icon: LayoutDashboard },
@@ -12,11 +12,16 @@ const menu = [
   { path: 'talent', label: 'Banco de talentos', icon: UserRoundSearch },
   { path: 'leads', label: 'Leads empresariais', icon: UsersRound },
   { path: 'content', label: 'Conteúdos', icon: BookOpenText },
+  { path: 'hero', label: 'Página inicial', icon: Presentation },
   { path: 'users', label: 'Usuários', icon: UserCog },
+  { path: 'notifications', label: 'Notificações', icon: Mail },
   { path: 'privacy', label: 'Privacidade', icon: ShieldCheck },
   { path: 'audit', label: 'Auditoria', icon: Activity },
 ];
 type AdminArticle = Insight & { id: string; published: boolean; created_at: string; updated_at: string };
+type AdminSlide = HeroSlide & { id: string; accentLine: number | ''; imageKey: string; position: number; active: boolean; created_at: string; updated_at: string };
+type EmailTemplate = { key: string; label: string; audience: string; subject: string; body: string; enabled: boolean; updated_at: string; variables: string[] };
+type EmailSettings = { SMTP_HOST: string; SMTP_PORT: number; SMTP_SECURE: boolean; SMTP_USER: string; SMTP_PASS_SET: boolean; EMAIL_FROM: string; LEADS_NOTIFICATION_EMAIL: string; configured: boolean; stored_in_panel: string[]; templates: EmailTemplate[] };
 
 const appStatuses = ['Candidatura recebida', 'Em análise', 'Em processo seletivo', 'Encerrada'];
 const leadStatuses = ['Novo contato', 'Em atendimento', 'Reunião agendada', 'Proposta enviada', 'Em negociação', 'Convertido', 'Não convertido'];
@@ -37,6 +42,8 @@ export function AdminPanel() {
   const [editingArticle, setEditingArticle] = useState<AdminArticle | null>(null);
   const [userEditorOpen, setUserEditorOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<AdminUser | null>(null);
+  const [slideEditorOpen, setSlideEditorOpen] = useState(false);
+  const [editingSlide, setEditingSlide] = useState<AdminSlide | null>(null);
   const activeView = location.pathname.split('/')[2] || 'dashboard';
   const activeMenu = menu.find((item) => item.path === activeView) || menu[0];
   const refresh = () => setRefreshKey((value) => value + 1);
@@ -55,7 +62,7 @@ export function AdminPanel() {
   useEffect(() => {
     if (!session) return;
     let cancelled = false;
-    const endpoint: Record<string, string> = { dashboard: '/api/admin/dashboard', jobs: '/api/admin/jobs', applications: '/api/admin/applications', talent: '/api/admin/talent', leads: '/api/admin/leads', content: '/api/admin/articles', users: '/api/admin/users', privacy: '/api/admin/privacy-requests', audit: '/api/admin/audit' };
+    const endpoint: Record<string, string> = { dashboard: '/api/admin/dashboard', jobs: '/api/admin/jobs', applications: '/api/admin/applications', talent: '/api/admin/talent', leads: '/api/admin/leads', content: '/api/admin/articles', hero: '/api/admin/hero-slides', users: '/api/admin/users', notifications: '/api/admin/email-settings', privacy: '/api/admin/privacy-requests', audit: '/api/admin/audit' };
     setLoading(true); setError('');
     apiGet<any>(endpoint[activeView] || endpoint.dashboard).then((data) => { if (!cancelled) setPayload(data); }).catch((reason: Error) => { if (!cancelled) { setError(reason.message); if (reason.message.includes('sessão')) { setSession(null); setCsrfToken(''); } } }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -77,7 +84,9 @@ export function AdminPanel() {
         {activeView === 'talent' && <TalentView items={payload?.items || []} onRefresh={refresh} />}
         {activeView === 'leads' && <LeadsView items={payload?.items || []} onRefresh={refresh} />}
         {activeView === 'content' && <ContentView items={payload?.items || []} onCreate={() => { setEditingArticle(null); setContentEditorOpen(true); }} onEdit={(article) => { setEditingArticle(article); setContentEditorOpen(true); }} />}
+        {activeView === 'hero' && <HeroSlidesView items={payload?.items || []} onCreate={() => { setEditingSlide(null); setSlideEditorOpen(true); }} onEdit={(slide) => { setEditingSlide(slide); setSlideEditorOpen(true); }} onRefresh={refresh} />}
         {activeView === 'users' && <UsersView items={payload?.items || []} currentUserId={payload?.current_user_id || ''} onCreate={() => { setEditingUser(null); setUserEditorOpen(true); }} onEdit={(user) => { setEditingUser(user); setUserEditorOpen(true); }} onRefresh={refresh} />}
+        {activeView === 'notifications' && <NotificationsView settings={payload as EmailSettings | null} onRefresh={refresh} />}
         {activeView === 'privacy' && <PrivacyRequestsView items={payload?.items || []} onRefresh={refresh} />}
         {activeView === 'audit' && <AuditView items={payload?.items || []} />}
       </>}</main>
@@ -85,6 +94,7 @@ export function AdminPanel() {
     {jobEditorOpen && <JobEditor job={editingJob} onClose={() => setJobEditorOpen(false)} onSaved={() => { setJobEditorOpen(false); refresh(); }} />}
     {contentEditorOpen && <ContentEditor article={editingArticle} onClose={() => setContentEditorOpen(false)} onSaved={() => { setContentEditorOpen(false); refresh(); }} />}
     {userEditorOpen && <UserEditor user={editingUser} onClose={() => setUserEditorOpen(false)} onSaved={() => { setUserEditorOpen(false); refresh(); }} />}
+    {slideEditorOpen && <SlideEditor slide={editingSlide} onClose={() => setSlideEditorOpen(false)} onSaved={() => { setSlideEditorOpen(false); refresh(); }} />}
   </div>;
 }
 
@@ -257,6 +267,171 @@ function UserEditor({ user, onClose, onSaved }: { user: AdminUser | null; onClos
     finally { setBusy(false); }
   }
   return <div className="admin-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="admin-job-modal user-editor-modal" role="dialog" aria-modal="true" aria-labelledby="user-modal-title"><div className="admin-modal-head"><div><span className="eyebrow">CONTROLE DE ACESSO</span><h2 id="user-modal-title">{user ? 'Editar usuário' : 'Novo usuário'}</h2></div><button type="button" onClick={onClose} aria-label="Fechar"><X size={20} /></button></div><form className="admin-editor-form" onSubmit={submit} noValidate><div className="form-grid"><label className="field-full"><span>Nome completo <i>*</i></span><input name="name" defaultValue={user?.name || ''} required maxLength={160} placeholder="Quem vai usar o painel" /></label><label className="field-full"><span>E-mail de acesso {!user && <i>*</i>}</span><input name="email" type="email" defaultValue={user?.email || ''} required={!user} readOnly={Boolean(user)} maxLength={254} autoComplete="off" placeholder="nome@empresa.com.br" />{user && <small className="field-hint">O e-mail de acesso não pode ser alterado depois da criação.</small>}</label><label className="field-full"><span>{user ? <>Nova senha <small>Deixe em branco para manter a atual</small></> : <>Senha inicial <i>*</i></>}</span><input name="password" type="password" autoComplete="new-password" required={!user} minLength={14} placeholder="Mínimo de 14 caracteres, com maiúsculas, minúsculas e números" /></label><div className="admin-toggle-row field-full"><label><input name="active" type="checkbox" defaultChecked={user ? user.active : true} /><span><strong>Acesso ativo</strong><small>Contas desativadas não entram no painel e perdem a sessão aberta.</small></span></label></div></div>{error && <div className="form-error" role="alert">{error}</div>}<div className="admin-modal-actions"><button type="button" className="button button-outline" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={busy}>{busy ? 'Salvando…' : user ? 'Salvar alterações' : 'Criar usuário'} <Check size={16} /></button></div></form></section></div>;
+}
+
+function HeroSlidesView({ items, onCreate, onEdit, onRefresh }: { items: AdminSlide[]; onCreate: () => void; onEdit: (slide: AdminSlide) => void; onRefresh: () => void }) {
+  const [busy, setBusy] = useState(''); const [error, setError] = useState(''); const [feedback, setFeedback] = useState('');
+  async function move(slide: AdminSlide, direction: -1 | 1) {
+    const index = items.findIndex((item) => item.id === slide.id);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= items.length) return;
+    const order = items.map((item) => item.id);
+    [order[index], order[target]] = [order[target], order[index]];
+    setBusy(slide.id); setError(''); setFeedback('');
+    try { await apiPost('/api/admin/hero-slides/reorder', { order }); setFeedback('Ordem dos destaques atualizada.'); onRefresh(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível reordenar os destaques.'); }
+    finally { setBusy(''); }
+  }
+  async function toggleActive(slide: AdminSlide) {
+    setBusy(slide.id); setError(''); setFeedback('');
+    try { await apiPut(`/api/admin/hero-slides/${slide.id}`, { active: !slide.active }); setFeedback(slide.active ? 'Destaque desativado: saiu da página inicial.' : 'Destaque ativado: já aparece na página inicial.'); onRefresh(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível atualizar o destaque.'); }
+    finally { setBusy(''); }
+  }
+  async function remove(slide: AdminSlide) {
+    if (!window.confirm(`Excluir o destaque "${slide.navigationLabel}"? Para tirá-lo do site sem perder o conteúdo, prefira desativar.`)) return;
+    setBusy(slide.id); setError(''); setFeedback('');
+    try { await apiDelete(`/api/admin/hero-slides/${slide.id}`); setFeedback('Destaque excluído.'); onRefresh(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível excluir o destaque.'); }
+    finally { setBusy(''); }
+  }
+  return <div className="admin-list-view"><div className="admin-page-intro"><div><span className="eyebrow">APRESENTAÇÃO DO SITE</span><h2>Slides da página inicial.</h2><p>Edite os textos, botões e a imagem de cada destaque do carrossel. A ordem definida aqui é a ordem exibida no site.</p></div><button className="button button-primary" type="button" onClick={onCreate}><Plus size={17} /> Novo slide</button></div>{error && <div className="admin-alert" role="alert">{error}<button type="button" onClick={onRefresh}>Tentar novamente</button></div>}{feedback && <div className="admin-inline-feedback" role="status">{feedback}<button type="button" onClick={() => setFeedback('')}><X size={14} /></button></div>}
+    <div className="admin-toolbar"><span>{items.length} slides · {items.filter((slide) => slide.active).length} ativos no carrossel</span><span><Presentation size={14} /> Alterações entram no ar ao salvar</span></div>
+    {items.length ? <div className="hero-slide-list">{items.map((slide, index) => <article className="hero-slide-card" key={slide.id}><div className="hero-slide-thumb"><img src={slide.imageUrl} alt={slide.imageAlt || slide.navigationLabel} loading="lazy" />{!slide.active && <span className="hero-slide-thumb-off">Desativado</span>}</div><div className="hero-slide-body"><div className="hero-slide-head"><span className="hero-slide-index">{String(index + 1).padStart(2, '0')}</span><div><strong>{slide.navigationLabel}</strong><small>{slide.eyebrow}{slide.location ? ` · ${slide.location}` : ''}</small></div><span className={`admin-status-pill ${slide.active ? 'status-live' : 'status-draft'}`}>{slide.active ? 'No site' : 'Fora do site'}</span></div><p className="hero-slide-title">{slide.title.map((line) => line.text).join(' ')}</p><p className="hero-slide-text">{slide.text}</p><div className="hero-slide-links"><span>{slide.primary.label} → {slide.primary.to}</span>{slide.secondary.label && <span>{slide.secondary.label} → {slide.secondary.to}</span>}</div></div><div className="hero-slide-actions"><button type="button" title="Mover para cima" aria-label={`Mover ${slide.navigationLabel} para cima`} disabled={busy === slide.id || index === 0} onClick={() => move(slide, -1)}><ArrowUp size={15} /></button><button type="button" title="Mover para baixo" aria-label={`Mover ${slide.navigationLabel} para baixo`} disabled={busy === slide.id || index === items.length - 1} onClick={() => move(slide, 1)}><ArrowDown size={15} /></button><button type="button" title="Editar slide" aria-label={`Editar ${slide.navigationLabel}`} onClick={() => onEdit(slide)}><FileText size={15} /></button><button type="button" className={slide.active ? 'admin-row-danger' : ''} title={slide.active ? 'Desativar slide' : 'Ativar slide'} aria-label={slide.active ? `Desativar ${slide.navigationLabel}` : `Ativar ${slide.navigationLabel}`} disabled={busy === slide.id} onClick={() => toggleActive(slide)}>{slide.active ? <Ban size={15} /> : <CircleCheck size={15} />}</button><button type="button" className="admin-row-danger" title="Excluir slide" aria-label={`Excluir ${slide.navigationLabel}`} disabled={busy === slide.id || items.length <= 1} onClick={() => remove(slide)}><Trash2 size={15} /></button></div></article>)}</div> : <AdminEmpty icon={<Presentation size={21} />} title="Nenhum slide cadastrado." text="Crie o primeiro destaque para preencher o carrossel da página inicial." />}
+    <div className="admin-privacy-reminder"><Presentation size={16} /><span>Deixe ao menos um slide ativo. Sem destaques ativos, a página inicial mantém o conteúdo revisado de fábrica.</span></div>
+  </div>;
+}
+
+function SlideEditor({ slide, onClose, onSaved }: { slide: AdminSlide | null; onClose: () => void; onSaved: () => void }) {
+  const [busy, setBusy] = useState(false); const [error, setError] = useState('');
+  const [image, setImage] = useState<File | null>(null);
+  const [removeImage, setRemoveImage] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState('');
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const currentImage = slide?.imageKey && slide?.imageUrl ? slide.imageUrl : '';
+  const preview = previewUrl || (removeImage ? '' : currentImage);
+  useEffect(() => {
+    if (!image) { setPreviewUrl(''); return; }
+    const url = URL.createObjectURL(image);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [image]);
+  function chooseImage(next: File | null) {
+    setError('');
+    if (next) {
+      if (!['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(next.type)) { setImage(null); if (imageInputRef.current) imageInputRef.current.value = ''; setError('Use uma imagem JPG, PNG, WebP ou AVIF.'); return; }
+      if (next.size > 5 * 1024 * 1024) { setImage(null); if (imageInputRef.current) imageInputRef.current.value = ''; setError('A imagem deve ter no máximo 5 MB.'); return; }
+    }
+    setImage(next); setRemoveImage(false);
+  }
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setError('');
+    const form = new FormData(event.currentTarget);
+    form.set('active', form.get('active') === 'on' ? 'true' : 'false');
+    form.set('remove_image', removeImage && !image ? 'true' : 'false');
+    if (!image) form.delete('image');
+    setBusy(true);
+    try { if (slide) await apiAdminForm(`/api/admin/hero-slides/${slide.id}`, form, 'PUT'); else await apiAdminForm('/api/admin/hero-slides', form); onSaved(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível salvar o slide.'); }
+    finally { setBusy(false); }
+  }
+  return <div className="admin-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="admin-job-modal slide-editor-modal" role="dialog" aria-modal="true" aria-labelledby="slide-modal-title"><div className="admin-modal-head"><div><span className="eyebrow">CARROSSEL DA PÁGINA INICIAL</span><h2 id="slide-modal-title">{slide ? 'Editar slide' : 'Novo slide'}</h2></div><button type="button" onClick={onClose} aria-label="Fechar"><X size={20} /></button></div><form className="admin-editor-form" onSubmit={submit} noValidate><div className="form-grid">
+    <label className="field-full"><span>Etiqueta acima do título <i>*</i></span><input name="eyebrow" defaultValue={slide?.eyebrow || ''} required maxLength={120} placeholder="Ex.: CONSULTORIA DE PESSOAS & NEGÓCIOS" /></label>
+    <label><span>Localidade / apoio da etiqueta</span><input name="location" defaultValue={slide?.location || ''} maxLength={120} placeholder="Ex.: RECIFE, PE" /></label>
+    <label><span>Rótulo lateral</span><input name="side_label" defaultValue={slide?.sideLabel || ''} maxLength={120} placeholder="Ex.: HUMAN CAPITAL / RECIFE" /></label>
+    <label className="field-full"><span>Nome do slide <i>*</i> <small>Aparece na navegação, nos controles e em leitores de tela.</small></span><input name="navigation_label" defaultValue={slide?.navigationLabel || ''} required maxLength={160} placeholder="Ex.: Recrutamento e seleção" /></label>
+    <label className="field-full"><span>Título <i>*</i> <small>Uma linha por vez. As linhas são exibidas em sequência.</small></span><textarea name="title" rows={3} defaultValue={(slide?.title || []).map((line) => line.text).join('\n')} required placeholder={'Pessoas certas\ntransformam\nnegócios.'} /></label>
+    <label><span>Linha destacada <small>Nº da linha com cor de destaque</small></span><input name="accent_line" type="number" min={0} max={6} defaultValue={slide?.accentLine || ''} placeholder="Ex.: 2" /></label>
+    <label><span>Posição no carrossel <small>0 vem primeiro</small></span><input name="position" type="number" min={0} max={99} defaultValue={slide?.position ?? 0} /></label>
+    <label className="field-full"><span>Texto de apoio <i>*</i></span><textarea name="text" rows={3} defaultValue={slide?.text || ''} required maxLength={600} /></label>
+    <label><span>Botão principal: texto <i>*</i></span><input name="primary_label" defaultValue={slide?.primary?.label || ''} required maxLength={80} placeholder="Ex.: Encontre sua solução" /></label>
+    <label><span>Botão principal: destino <i>*</i> <small>Caminho interno, começando com /</small></span><input name="primary_to" defaultValue={slide?.primary?.to || ''} required maxLength={300} placeholder="/solucoes" /></label>
+    <label><span>Botão secundário: texto</span><input name="secondary_label" defaultValue={slide?.secondary?.label || ''} maxLength={80} placeholder="Ex.: Explore oportunidades" /></label>
+    <label><span>Botão secundário: destino</span><input name="secondary_to" defaultValue={slide?.secondary?.to || ''} maxLength={300} placeholder="/vagas" /></label>
+    <label className="field-full"><span>Rodapé do slide</span><input name="footnote" defaultValue={slide?.footnote || ''} maxLength={200} placeholder="Ex.: Pessoas no centro. Negócios em movimento." /></label>
+    <div className="field-full admin-image-field"><span className="admin-image-field-title">Imagem de fundo <small>Opcional · JPG, PNG, WebP ou AVIF até 5 MB · sem envio, usa a imagem padrão do site</small></span><div className="admin-image-picker"><div className="admin-image-preview hero-image-preview">{preview ? <img src={preview} alt="Pré-visualização da imagem do slide" /> : <span className="admin-image-placeholder"><ImagePlus size={20} /><small>Sem imagem própria</small></span>}</div><div className="admin-image-controls"><label className="upload-zone upload-zone-compact" htmlFor="slide-image" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); chooseImage(event.dataTransfer.files?.[0] || null); }}><input ref={imageInputRef} type="file" id="slide-image" name="image" accept="image/jpeg,image/png,image/webp,image/avif" onChange={(event) => chooseImage(event.target.files?.[0] || null)} /><span className="upload-icon"><ImagePlus size={18} /></span><span className="upload-copy"><strong>{image ? image.name : preview ? 'Substituir imagem' : 'Enviar imagem'}</strong><small>{image ? `${(image.size / 1024 / 1024).toFixed(2)} MB · Clique para trocar` : 'Imagem larga, proporção recomendada 16:9'}</small></span></label><label><span>Texto alternativo <small>Obrigatório para acessibilidade</small></span><input name="image_alt" defaultValue={slide?.imageAlt || ''} maxLength={300} placeholder="Descreva a cena da imagem" /></label><label><span>Posição de foco <small>Ex.: center 52% ou 42% 52%</small></span><input name="image_position" defaultValue={slide?.imagePosition || 'center 52%'} maxLength={40} /></label>{(currentImage || image) && <button type="button" className="admin-delete-link" onClick={() => { const next = !(removeImage && !image); setRemoveImage(next); setImage(null); if (imageInputRef.current) imageInputRef.current.value = ''; }}>{removeImage && !image ? 'Manter imagem atual' : 'Remover imagem e voltar à padrão'} <Trash2 size={14} /></button>}</div></div></div>
+    <div className="admin-toggle-row field-full"><label><input type="checkbox" name="active" defaultChecked={slide ? slide.active : true} /><span><strong>Exibir este slide no site</strong><small>Slides desativados ficam guardados no painel, fora do carrossel.</small></span></label></div>
+  </div>{error && <div className="form-error" role="alert">{error}</div>}<div className="admin-modal-actions"><button type="button" className="button button-outline" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={busy}>{busy ? 'Salvando…' : slide ? 'Salvar alterações' : 'Criar slide'} <Check size={16} /></button></div></form></section></div>;
+}
+
+function NotificationsView({ settings, onRefresh }: { settings: EmailSettings | null; onRefresh: () => void }) {
+  const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [feedback, setFeedback] = useState('');
+  const [testTo, setTestTo] = useState(''); const [testing, setTesting] = useState(false);
+  if (!settings) return <AdminEmpty icon={<Mail size={21} />} title="Configurações indisponíveis." text="Não foi possível carregar as configurações de notificação." />;
+  async function saveSmtp(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setError(''); setFeedback('');
+    const form = new FormData(event.currentTarget);
+    const body: Record<string, any> = {
+      SMTP_HOST: String(form.get('SMTP_HOST') || '').trim(),
+      SMTP_PORT: String(form.get('SMTP_PORT') || '').trim(),
+      SMTP_SECURE: form.get('SMTP_SECURE') === 'on',
+      SMTP_USER: String(form.get('SMTP_USER') || '').trim(),
+      EMAIL_FROM: String(form.get('EMAIL_FROM') || '').trim(),
+      LEADS_NOTIFICATION_EMAIL: String(form.get('LEADS_NOTIFICATION_EMAIL') || '').trim(),
+    };
+    // Senha em branco mantém a atual: só enviamos quando o campo foi preenchido.
+    const password = String(form.get('SMTP_PASS') || '');
+    if (password) body.SMTP_PASS = password;
+    setBusy(true);
+    try { await apiPut('/api/admin/email-settings', body); setFeedback('Configuração de e-mail salva.'); onRefresh(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível salvar a configuração.'); }
+    finally { setBusy(false); }
+  }
+  async function sendTest(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setError(''); setFeedback(''); setTesting(true);
+    try { const result = await apiPost<{ ok: boolean; message: string }>('/api/admin/email-settings/test', { to: testTo }); setFeedback(result.message || 'Teste enviado.'); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível enviar o teste.'); }
+    finally { setTesting(false); }
+  }
+  const fromPanel = (key: string) => settings.stored_in_panel.includes(key);
+  return <div className="admin-list-view"><div className="admin-page-intro"><div><span className="eyebrow">ENTREGA DE MENSAGENS</span><h2>Notificações por e-mail.</h2><p>Configure o servidor SMTP e revise o texto de cada mensagem enviada pelos formulários de contato, candidatura e currículo.</p></div><span className={`admin-count-chip ${settings.configured ? 'chip-live' : 'chip-off'}`}>{settings.configured ? 'E-mail ativo' : 'E-mail desativado'}</span></div>{error && <div className="admin-alert" role="alert">{error}</div>}{feedback && <div className="admin-inline-feedback" role="status">{feedback}<button type="button" onClick={() => setFeedback('')}><X size={14} /></button></div>}
+    {!settings.configured && <div className="admin-notice admin-notice-warning" role="status"><MailWarning size={17} /><div><strong>Nenhum e-mail está sendo enviado.</strong><p>Os formulários continuam gravando contatos, candidaturas e currículos neste painel, mas confirmações e avisos só saem depois que o servidor SMTP e o remetente estiverem configurados abaixo.</p></div></div>}
+    <section className="admin-panel-card"><div className="admin-card-heading"><div><span className="eyebrow">SERVIDOR DE E-MAIL</span><h3>Configuração SMTP</h3></div><span className="admin-card-note">Os valores salvos aqui têm prioridade sobre as variáveis de ambiente.</span></div>
+      <form className="admin-editor-form" onSubmit={saveSmtp} noValidate><div className="form-grid">
+        <label><span>Servidor (host) <i>*</i></span><input name="SMTP_HOST" defaultValue={settings.SMTP_HOST} maxLength={253} placeholder="smtp.seuprovedor.com" />{fromPanel('SMTP_HOST') && <small className="field-hint">Definido no painel</small>}</label>
+        <label><span>Porta</span><input name="SMTP_PORT" type="number" min={1} max={65535} defaultValue={settings.SMTP_PORT || 587} /></label>
+        <label><span>Usuário</span><input name="SMTP_USER" defaultValue={settings.SMTP_USER} maxLength={254} autoComplete="off" placeholder="usuario@seudominio.com.br" /></label>
+        <label><span>Senha</span><input name="SMTP_PASS" type="password" autoComplete="new-password" maxLength={512} placeholder={settings.SMTP_PASS_SET ? 'Já definida · deixe em branco para manter' : 'Senha do provedor SMTP'} /><small className="field-hint">{settings.SMTP_PASS_SET ? 'Guardada no banco da aplicação. Em branco, mantém a atual.' : 'Nunca exibida de volta após salvar.'}</small></label>
+        <label className="field-full"><span>Remetente <i>*</i></span><input name="EMAIL_FROM" defaultValue={settings.EMAIL_FROM} maxLength={254} placeholder="IM Personnel <contato@seudominio.com.br>" />{fromPanel('EMAIL_FROM') && <small className="field-hint">Definido no painel</small>}</label>
+        <label className="field-full"><span>Caixa que recebe os avisos da equipe <small>Contatos, candidaturas e currículos novos</small></span><input name="LEADS_NOTIFICATION_EMAIL" type="email" defaultValue={settings.LEADS_NOTIFICATION_EMAIL} maxLength={254} placeholder="contato@seudominio.com.br" /></label>
+        <div className="admin-toggle-row field-full"><label><input type="checkbox" name="SMTP_SECURE" defaultChecked={settings.SMTP_SECURE} /><span><strong>Conexão segura (SSL/TLS)</strong><small>Use para porta 465. Deixe desmarcado para 587 com STARTTLS.</small></span></label></div>
+      </div><div className="admin-modal-actions"><button type="submit" className="button button-primary" disabled={busy}>{busy ? 'Salvando…' : 'Salvar configuração'} <Check size={16} /></button></div></form>
+      <form className="admin-test-form" onSubmit={sendTest}><label><span>Enviar mensagem de teste para</span><input value={testTo} type="email" onChange={(event) => setTestTo(event.target.value)} maxLength={254} placeholder={settings.LEADS_NOTIFICATION_EMAIL || 'destino@seudominio.com.br'} /></label><button type="submit" className="button button-outline button-small" disabled={testing || !settings.configured}>{testing ? 'Enviando…' : 'Testar conexão'} <Send size={14} /></button><small>Salve a configuração antes de testar.</small></form>
+    </section>
+    <section className="admin-panel-card"><div className="admin-card-heading"><div><span className="eyebrow">MENSAGENS ENVIADAS</span><h3>Modelos de e-mail</h3></div><span className="admin-card-note">Use as variáveis entre chaves duplas; elas são preenchidas a cada envio.</span></div>
+      <div className="admin-accordion-list">{settings.templates.map((template) => <TemplateCard key={template.key} template={template} onChanged={onRefresh} />)}</div>
+    </section>
+    <div className="admin-privacy-reminder"><ShieldCheck size={16} /><span>A senha SMTP fica gravada no banco da aplicação, no mesmo volume dos currículos. Proteja o disco, restrinja backups e prefira credenciais exclusivas para envio.</span></div>
+  </div>;
+}
+
+function TemplateCard({ template, onChanged }: { template: EmailTemplate; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [saved, setSaved] = useState('');
+  const [preview, setPreview] = useState<{ subject: string; body: string } | null>(null);
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setError(''); setSaved('');
+    const form = new FormData(event.currentTarget);
+    setBusy(true);
+    try { await apiPut(`/api/admin/email-templates/${template.key}`, { subject: String(form.get('subject') || ''), body: String(form.get('body') || ''), enabled: form.get('enabled') === 'on' }); setSaved('Modelo salvo.'); setPreview(null); onChanged(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível salvar o modelo.'); }
+    finally { setBusy(false); }
+  }
+  async function loadPreview() {
+    setError('');
+    try { setPreview(await apiPost<{ subject: string; body: string }>(`/api/admin/email-templates/${template.key}/preview`, {})); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível gerar a prévia.'); }
+  }
+  return <details className="admin-record-card"><summary><span className="admin-record-avatar template-avatar"><Mail size={17} /></span><span className="admin-record-main"><strong>{template.label}</strong><small>{template.audience} · {template.subject}</small></span><span className={`admin-status-pill ${template.enabled ? 'status-live' : 'status-draft'}`}>{template.enabled ? 'Enviando' : 'Desligado'}</span><ChevronDown size={17} /></summary>
+    <div className="admin-record-detail">
+      <div className="template-variables"><span>VARIÁVEIS DISPONÍVEIS</span><div>{template.variables.map((name) => <code key={name}>{`{{${name}}}`}</code>)}</div></div>
+      <form className="admin-editor-form" onSubmit={save} noValidate><div className="form-grid">
+        <label className="field-full"><span>Assunto <i>*</i></span><input name="subject" defaultValue={template.subject} required maxLength={200} /></label>
+        <label className="field-full"><span>Mensagem <small>Texto simples, com quebras de linha</small></span><textarea name="body" rows={9} defaultValue={template.body} maxLength={4000} /></label>
+        <div className="admin-toggle-row field-full"><label><input type="checkbox" name="enabled" defaultChecked={template.enabled} /><span><strong>Enviar esta mensagem</strong><small>Desligado, o formulário segue gravando os dados sem disparar este e-mail.</small></span></label></div>
+      </div>{error && <div className="form-error" role="alert">{error}</div>}{saved && <div className="admin-inline-feedback" role="status">{saved}</div>}<div className="admin-modal-actions"><button type="button" className="button button-outline button-small" onClick={loadPreview}>Ver prévia <Eye size={14} /></button><button type="submit" className="button button-primary button-small" disabled={busy}>{busy ? 'Salvando…' : 'Salvar modelo'} <Check size={14} /></button></div></form>
+      {preview && <div className="template-preview" role="status"><small>PRÉVIA COM DADOS DE EXEMPLO</small><strong>{preview.subject}</strong><pre>{preview.body}</pre></div>}
+    </div>
+  </details>;
 }
 
 function AdminEmpty({ icon, title, text }: { icon: ReactNode; title: string; text: string }) {

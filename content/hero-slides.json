@@ -1,0 +1,105 @@
+[
+  {
+    "slug": "pessoas-e-negocios",
+    "eyebrow": "CONSULTORIA DE PESSOAS & NEGÓCIOS",
+    "location": "RECIFE, PE",
+    "sideLabel": "HUMAN CAPITAL / RECIFE",
+    "navigationLabel": "Pessoas e negócios",
+    "title": [
+      { "text": "Pessoas certas" },
+      { "text": "transformam", "accent": true },
+      { "text": "negócios." }
+    ],
+    "text": "Conectamos talentos, lideranças e organizações por meio de soluções estratégicas em recrutamento, seleção e gestão de pessoas.",
+    "primary": { "to": "/solucoes", "label": "Encontre sua solução" },
+    "secondary": { "to": "/vagas", "label": "Explore oportunidades" },
+    "footnote": "Pessoas no centro. Negócios em movimento.",
+    "imagePosition": "center 52%",
+    "imageAlt": "Lideranças e profissionais colaborando em uma conversa de estratégia"
+  },
+  {
+    "slug": "recrutamento",
+    "eyebrow": "RECRUTAMENTO & SELEÇÃO",
+    "location": "PARA EMPRESAS",
+    "sideLabel": "TALENT ACQUISITION / 02",
+    "navigationLabel": "Recrutamento e seleção",
+    "title": [
+      { "text": "Contratações que" },
+      { "text": "começam com escuta.", "accent": true }
+    ],
+    "text": "Compreendemos o contexto, a cultura e o desafio de cada posição para apoiar escolhas mais alinhadas ao negócio.",
+    "primary": { "to": "/servicos/recrutamento-e-selecao", "label": "Conheça o serviço" },
+    "secondary": { "to": "/solicitar-proposta", "label": "Falar com a equipe" },
+    "footnote": "Contexto, critério e proximidade em cada busca.",
+    "imagePosition": "42% 52%",
+    "imageAlt": "Profissionais em uma conversa de trabalho"
+  },
+  {
+    "slug": "liderancas",
+    "eyebrow": "EXECUTIVE SEARCH",
+    "location": "LIDERANÇAS",
+    "sideLabel": "LEADERSHIP / 03",
+    "navigationLabel": "Executive Search",
+    "title": [
+      { "text": "O próximo ciclo pede" },
+      { "text": "a liderança certa.", "accent": true }
+    ],
+    "text": "Apoiamos organizações na busca por lideranças alinhadas ao momento, à cultura e às decisões que vêm pela frente.",
+    "primary": { "to": "/servicos/executive-search", "label": "Conheça o Executive Search" },
+    "secondary": { "to": "/solicitar-proposta", "label": "Conversar sobre a busca" },
+    "footnote": "Liderança é direção, presença e futuro compartilhado.",
+    "imagePosition": "58% 52%",
+    "imageAlt": "Profissionais trocando perspectivas em uma reunião"
+  },
+  {
+    "slug": "industrial",
+    "eyebrow": "SELEÇÃO INDUSTRIAL",
+    "location": "OPERAÇÕES",
+    "sideLabel": "INDUSTRIAL / 04",
+    "navigationLabel": "Seleção industrial",
+    "title": [
+      { "text": "Precisão para formar" },
+      { "text": "times que fazem acontecer.", "accent": true }
+    ],
+    "text": "Desenhamos processos de seleção atentos às exigências operacionais, técnicas e humanas de cada ambiente industrial.",
+    "primary": { "to": "/servicos/selecao-industrial", "label": "Ver solução industrial" },
+    "secondary": { "to": "/solicitar-proposta", "label": "Solicitar uma conversa" },
+    "footnote": "Rigor técnico sem perder de vista as pessoas.",
+    "imagePosition": "70% 52%",
+    "imageAlt": "Equipe de profissionais em colaboração"
+  },
+  {
+    "slug": "gestao",
+    "eyebrow": "CONSULTORIA DE RH",
+    "location": "GESTÃO DE PESSOAS",
+    "sideLabel": "PEOPLE STRATEGY / 05",
+    "navigationLabel": "Gestão de pessoas",
+    "title": [
+      { "text": "Decisões de pessoas," },
+      { "text": "com mais clareza.", "accent": true }
+    ],
+    "text": "Estruturamos conversas, processos e práticas que ajudam a transformar desafios de gestão em caminhos possíveis.",
+    "primary": { "to": "/servicos/consultoria-de-rh", "label": "Conheça a consultoria" },
+    "secondary": { "to": "/solucoes", "label": "Ver todas as soluções" },
+    "footnote": "Gestão que combina intenção, processo e realidade.",
+    "imagePosition": "31% 52%",
+    "imageAlt": "Pessoas discutindo estratégia em ambiente de trabalho"
+  },
+  {
+    "slug": "oportunidades",
+    "eyebrow": "PARA PROFISSIONAIS",
+    "location": "NOVOS CAMINHOS",
+    "sideLabel": "CAREERS / 06",
+    "navigationLabel": "Oportunidades profissionais",
+    "title": [
+      { "text": "Seu próximo passo" },
+      { "text": "pode começar aqui.", "accent": true }
+    ],
+    "text": "Conheça as oportunidades publicadas e apresente seu perfil para futuras conversas com a IM Personnel.",
+    "primary": { "to": "/vagas", "label": "Ver vagas disponíveis" },
+    "secondary": { "to": "/curriculo", "label": "Apresentar meu perfil" },
+    "footnote": "Talentos em movimento. Possibilidades abertas.",
+    "imagePosition": "52% 52%",
+    "imageAlt": "Profissionais reunidos em uma conversa colaborativa"
+  }
+]

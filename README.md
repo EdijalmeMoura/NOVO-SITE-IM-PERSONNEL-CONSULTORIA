@@ -10,11 +10,13 @@ Site institucional responsivo em português brasileiro para a IM Personnel, com 
 - Candidatura sem conta obrigatória; arquivo PDF/DOCX validado por extensão, MIME, assinatura e tamanho no servidor, guardado fora da pasta pública.
 - Banco de talentos com autorização explícita registrada, versão do aviso de privacidade e ação administrativa de remoção.
 - Formulário empresarial conectado a um CRM simples, com etapas, responsável e observações.
-- Painel protegido: dashboard baseado em dados reais, gestão de vagas (rascunho/publicação/duplicação/encerramento), candidaturas, currículo protegido, banco de talentos, leads, pedidos de privacidade, artigos, usuários administrativos e trilha de auditoria.
+- Painel protegido: dashboard baseado em dados reais, gestão de vagas (rascunho/publicação/duplicação/encerramento), candidaturas, currículo protegido, banco de talentos, leads, pedidos de privacidade, artigos, **slides da página inicial**, **notificações por e-mail**, usuários administrativos e trilha de auditoria.
 - Gestão editorial para conteúdos/insights; os três artigos iniciais são carregados pela aplicação e podem ser editados e despublicados no painel, com **imagem de capa opcional** por conteúdo (JPG, PNG, WebP ou AVIF até 5 MB, validada por assinatura no servidor, com texto alternativo e saída no sitemap/dados estruturados).
 - **Gestão de usuários administrativos no painel**: criar contas com nome e senha forte, desativar e reativar acessos, trocar senhas e acompanhar o último acesso. Desativar derruba na hora a sessão aberta e bloqueia novo login, preservando a trilha de auditoria.
+- **Slides da página inicial no painel**: menu *Página inicial* para editar os destaques do carrossel — etiqueta, título em várias linhas com a linha destacada, texto de apoio, botões (somente caminhos internos), rodapé, imagem de fundo opcional, ordem de exibição e ativação/desativação sem perder o conteúdo.
+- **Notificações por e-mail no painel**: menu *Notificações* para configurar o servidor SMTP (host, porta, SSL/TLS, usuário, senha, remetente e caixa da equipe), testar a conexão com um envio real e revisar assunto e corpo de cada mensagem disparada pelos formulários, com variáveis como `{{nome}}`, `{{vaga}}` e `{{protocolo}}`.
 - Páginas de privacidade e preferências de cookies, sitemap dinâmico e `robots.txt`.
-- E-mail transacional opcional por SMTP. Os formulários continuam registrando os dados mesmo sem SMTP configurado, e o dashboard avisa quando o SMTP ou a caixa de notificações estão desligados.
+- E-mail transacional opcional por SMTP. O que for salvo no painel tem prioridade sobre as variáveis de ambiente. Os formulários continuam registrando os dados mesmo sem SMTP configurado, e o dashboard avisa quando o SMTP ou a caixa de notificações estão desligados.
 - Teste automatizado de integração para os principais fluxos do portal e do painel.
 
 **Não há vagas, clientes, depoimentos, resultados, certificações, telefones ou endereço físico inventados.** O portal começa sem oportunidades até que uma vaga real seja cadastrada. O endereço informado no site limita-se a Recife, Pernambuco, conforme o escopo recebido. WhatsApp só aparece se um número oficial for configurado.
@@ -111,13 +113,52 @@ LEADS_NOTIFICATION_EMAIL=contato@seudominio.com.br
 
 Os formulários públicos têm limite de 6 envios por IP a cada 15 minutos. Se o site estiver atrás de um proxy reverso com outra topologia, reveja o `trust proxy` para não fazer todos os visitantes compartilharem o mesmo limite.
 
+### Configurar e-mail e mensagens pelo painel
+
+O menu **Notificações** faz o mesmo papel das variáveis acima, sem redeploy: o que é salvo ali vai para a base SQLite e tem **prioridade sobre o `.env`**. Um campo limpo no painel devolve o valor ao ambiente.
+
+| Campo | O que faz |
+| --- | --- |
+| Servidor (host), Porta, Usuário, Senha | Credenciais SMTP do provedor. Porta 465 costuma exigir **Conexão segura (SSL/TLS)** marcada; 587 usa STARTTLS com a opção desmarcada. |
+| Remetente | Aceita `Nome <endereco@dominio.com.br>`. Junto com o host, é o que torna o envio ativo. |
+| Caixa que recebe os avisos da equipe | Equivale a `LEADS_NOTIFICATION_EMAIL` e é o destino padrão do botão **Testar conexão**. |
+
+A senha é gravada na base e nunca é devolvida pela API nem escrita na trilha de auditoria (o histórico registra apenas `definida`/`removida`). **Isso significa texto puro dentro do arquivo SQLite**, no mesmo volume dos currículos: proteja o disco, restrinja o acesso aos backups e prefira uma credencial exclusiva para envio. Se o volume for acessível a outras equipes, mantenha a senha como secret do ambiente em vez de digitá-la no painel.
+
+Cada mensagem disparada pelos formulários tem um modelo editável (assunto, corpo e liga/desliga). As variáveis entre chaves duplas são substituídas a cada envio, o botão **Ver prévia** mostra o resultado com dados de exemplo e o servidor recusa variáveis que não existem naquele modelo.
+
+| Modelo | Vai para | Variáveis |
+| --- | --- | --- |
+| `application_candidate` | Quem se candidatou | `{{nome}}`, `{{vaga}}`, `{{protocolo}}` |
+| `application_team` | Equipe (caixa de avisos) | `{{nome}}`, `{{email}}`, `{{telefone}}`, `{{vaga}}`, `{{protocolo}}` |
+| `talent_candidate` | Quem cadastrou o currículo | `{{nome}}`, `{{area}}`, `{{protocolo}}` |
+| `talent_team` | Equipe (caixa de avisos) | `{{nome}}`, `{{email}}`, `{{area}}`, `{{cidade}}`, `{{estado}}`, `{{protocolo}}` |
+| `lead_customer` | Quem enviou o formulário comercial | `{{nome}}`, `{{empresa}}`, `{{servico}}`, `{{protocolo}}` |
+| `lead_team` | Equipe (caixa de avisos) | `{{nome}}`, `{{empresa}}`, `{{servico}}`, `{{protocolo}}` |
+| `privacy_customer` | Titular dos dados | `{{nome}}`, `{{tipo}}`, `{{protocolo}}` |
+
+Desligar um modelo não interrompe o formulário: o envio continua validado, gravado e visível no painel — apenas aquele e-mail deixa de sair. Os textos revisados de fábrica ficam em `content/email-templates.json` e só são usados na primeira instalação.
+
+### Editar os slides da página inicial
+
+O menu **Página inicial** edita o carrossel de abertura. A instalação carrega os seis destaques revisados de `content/hero-slides.json`; a partir daí eles vivem na base e passam a ser editáveis pelo painel, sem rebuild.
+
+- **Textos**: etiqueta acima do título, localidade, rótulo lateral, nome do slide (usado na navegação e em leitores de tela), título com uma linha por vez, número da linha que recebe a cor de destaque, texto de apoio e rodapé.
+- **Botões**: texto e destino do principal (obrigatórios) e do secundário (opcional). O destino precisa ser um caminho interno começando com `/` — links externos são recusados para o carrossel não virar porta de saída do site.
+- **Imagem de fundo**: opcional, JPG/PNG/WebP/AVIF até 5 MB, validada por assinatura no servidor, com texto alternativo e posição de foco (por exemplo `center 52%`). Sem imagem própria o slide usa `/images/hero-team.jpg`; excluir o slide remove também a imagem enviada.
+- **Ordem e visibilidade**: as setas reordenam o carrossel na hora e desativar tira o slide do site mantendo o conteúdo no painel. Mantenha ao menos um slide ativo — sem nenhum ativo, a página inicial volta a mostrar os destaques revisados de fábrica — e o último slide não pode ser excluído.
+
+O conteúdo público é servido por `GET /api/hero-slides`, consultado pelo site a cada visita.
+
 ### Testes
 
 ```bash
 npm test
 ```
 
-O comando compila o frontend e executa um servidor de teste isolado com uma base temporária. O fluxo cobre: ausência inicial de vagas fictícias; login e proteção CSRF; criação/publicação/expiração/duplicação de vagas; busca pública; candidatura; assinatura e privacidade do upload; atualização de status; cadastro e exclusão de perfil do banco de talentos; leads e solicitações de privacidade; CMS com upload, substituição, remoção e validação de assinatura da imagem de capa; criação, desativação, reativação e troca de senha de usuários administrativos (incluindo bloqueio de auto-desativação e derrubada de sessão aberta); sitemap; trilha de auditoria e logout.
+O comando compila o frontend e executa servidores de teste isolados, cada um com base temporária própria. O fluxo principal (`test/flows.test.mjs`) cobre: ausência inicial de vagas fictícias; login e proteção CSRF; criação/publicação/expiração/duplicação de vagas; busca pública; candidatura; assinatura e privacidade do upload; atualização de status; cadastro e exclusão de perfil do banco de talentos; leads e solicitações de privacidade; CMS com upload, substituição, remoção e validação de assinatura da imagem de capa; criação, desativação, reativação e troca de senha de usuários administrativos (incluindo bloqueio de auto-desativação e derrubada de sessão aberta); sitemap; trilha de auditoria e logout.
+
+`test/site-settings.test.mjs` cobre as duas áreas configuráveis pelo painel: slides da página inicial (seis destaques de fábrica, edição de textos e imagem com upload, reordenação, desativação com efeito no endpoint público, recusa de destino externo e de título vazio, remoção da imagem junto com o slide e proteção do último slide) e notificações (SMTP salvo com prioridade sobre o ambiente, senha nunca devolvida nem auditada, validação de porta e remetente, modelos com variável desconhecida recusada, prévia renderizada e trilha de auditoria). Os demais arquivos verificam a instalação inicial e a criação do administrador sem Shell.
 
 ## Configuração
 
