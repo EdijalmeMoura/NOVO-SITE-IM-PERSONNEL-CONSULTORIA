@@ -182,6 +182,17 @@ export async function initializeDatabase() {
       updated_at TEXT NOT NULL DEFAULT ''
     );
 
+    CREATE TABLE IF NOT EXISTS email_events (
+      id TEXT PRIMARY KEY,
+      template_key TEXT NOT NULL DEFAULT '',
+      kind TEXT NOT NULL DEFAULT 'notification',
+      recipient TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL,
+      detail TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS email_events_created_idx ON email_events(created_at);
+
     CREATE TABLE IF NOT EXISTS audit_log (
       id TEXT PRIMARY KEY,
       actor_email TEXT NOT NULL,

@@ -1448,3 +1448,26 @@ img { max-width: 100%; }
   .hero-slide-thumb { height: 132px; }
   .hero-slide-actions { flex-direction: row; }
 }
+
+/* Listas paginadas: rodapé com o total real e carregamento por partes */
+.admin-collection-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; padding: 10px 13px; border: 1px solid #e6e6e6; border-radius: 7px; background: #ffffff; }
+.admin-collection-footer span { color: #8e8e8e; font-size: 9px; }
+.admin-collection-footer strong { color: #4a4a4a; }
+.admin-load-more { min-height: 30px; padding: 0 14px; border: 1px solid #e0e0e0; border-radius: 5px; color: #4a4a4a; background: #fafafa; font-size: 9px; font-weight: 700; letter-spacing: .02em; cursor: pointer; }
+.admin-load-more:hover:not(:disabled) { border-color: #cfcfcf; background: #f4f4f4; }
+.admin-load-more:disabled { opacity: .55; cursor: progress; }
+
+/* Saúde da entrega de e-mail */
+.admin-notice-danger { border-left-color: #a34747; background: #fdf7f7; }
+.admin-notice-danger > svg { color: #a34747; }
+.admin-notice-danger a { color: #a34747; text-decoration: underline; }
+.admin-email-health { margin-bottom: 12px; }
+.admin-health-grid { display: grid; gap: 1px; margin-top: 12px; border: 1px solid #e9e9e9; border-radius: 6px; background: #e9e9e9; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.admin-health-grid > div { padding: 11px 13px; background: #ffffff; }
+.admin-health-grid small { display: block; color: #909090; font-size: 8px; letter-spacing: .06em; text-transform: uppercase; }
+.admin-health-grid strong { display: block; margin-top: 4px; color: #3f3f3f; font-size: 11px; }
+.admin-status-pill.status-alert { color: #8d3d3d; background: #fbeeee; }
+.admin-status-pill.status-ok { color: #456b4d; background: #eff6f0; }
+@media (max-width: 900px) {
+  .admin-collection-footer { flex-direction: column; align-items: stretch; }
+}

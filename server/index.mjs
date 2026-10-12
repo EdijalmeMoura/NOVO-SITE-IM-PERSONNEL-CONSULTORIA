@@ -11,7 +11,7 @@ import { createServer as createViteServer } from 'vite';
 import { all, databaseFilePath, get, initializeDatabase, persistDatabase, run } from './db.mjs';
 import { hashPassword, verifyPassword } from './auth.mjs';
 import { ensureBootstrapAdmin } from './bootstrap.mjs';
-import { emailSettings, isEmailConfigured, renderTemplate, resetMailer, sendMessage, sendTemplate, verifyTransport } from './mailer.mjs';
+import { emailSettings, isEmailConfigured, readTemplate, renderTemplate, resetMailer, sendMessage, sendTemplate, verifyTransport } from './mailer.mjs';
 import insightDefaults from '../content/insights.json' with { type: 'json' };
 import heroSlideDefaults from '../content/hero-slides.json' with { type: 'json' };
 import emailTemplateDefaults from '../content/email-templates.json' with { type: 'json' };
@@ -49,6 +49,15 @@ function readRetentionPolicy(required) {
   return policy;
 }
 const asText = (value, max = 4000) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
+// Listas administrativas são paginadas no servidor e sempre devolvem o total: sem isso a
+// tela não sabe que existem mais registros do que os que couberam na resposta.
+function paginationParams(req, defaultLimit = 100, maxLimit = 500) {
+  const requested = Number.parseInt(req.query.limit, 10);
+  const limit = Math.min(maxLimit, Math.max(1, Number.isFinite(requested) ? requested : defaultLimit));
+  const requestedOffset = Number.parseInt(req.query.offset, 10);
+  const offset = Math.max(0, Number.isFinite(requestedOffset) ? requestedOffset : 0);
+  return { limit, offset };
+}
 // Em envios multipart os booleanos chegam como texto ('true'/'on'/'false'), por isso a conversão explícita.
 const asBoolean = (value) => value === true || ['true', 'on', '1', 'yes'].includes(String(value ?? '').trim().toLowerCase());
 const asEmail = (value) => asText(value, 254).toLowerCase();
@@ -276,6 +285,56 @@ function audit(req, action, entityType, entityId, details = {}) {
 }
 function activeDateFilter() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+}
+
+// --- Saúde do envio de e-mail -------------------------------------------------
+// Toda tentativa de envio é registrada: sem isso uma senha de SMTP expirada faria o
+// candidato ficar sem confirmação e a equipe sem o aviso, sem ninguém perceber.
+const EMAIL_EVENT_LIMIT = 200;
+function maskEmailError(message) {
+  let text = String(message ?? '').replace(/\s+/g, ' ').trim();
+  const { pass } = emailSettings();
+  if (pass) text = text.split(pass).join('***');
+  return text.slice(0, 300);
+}
+function recordEmailEvent({ templateKey = '', kind = 'notification', recipient = '', status, detail = '' }) {
+  try {
+    run('INSERT INTO email_events (id, template_key, kind, recipient, status, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [uuid(), templateKey, kind, recipient, status, detail, nowIso()]);
+    run('DELETE FROM email_events WHERE id NOT IN (SELECT id FROM email_events ORDER BY created_at DESC LIMIT ?)', [EMAIL_EVENT_LIMIT]);
+    persistDatabase();
+  } catch { console.error('Não foi possível registrar o resultado de um envio de e-mail.'); }
+}
+// Envia um modelo e guarda o resultado. Nunca lança: o formulário responde mesmo se o e-mail falhar.
+async function notify({ key, to, variables = {}, replyTo, kind = 'notification' }) {
+  if (!to) { recordEmailEvent({ templateKey: key, kind, status: 'skipped', detail: 'sem destinatário' }); return false; }
+  const template = readTemplate(key);
+  if (template && !template.enabled) { recordEmailEvent({ templateKey: key, kind, recipient: to, status: 'skipped', detail: 'modelo desativado no painel' }); return false; }
+  try {
+    const sent = await sendTemplate({ key, to, variables, replyTo });
+    recordEmailEvent({ templateKey: key, kind, recipient: to, status: sent ? 'sent' : 'skipped', detail: sent ? '' : 'modelo indisponível' });
+    return sent;
+  } catch (error) {
+    recordEmailEvent({ templateKey: key, kind, recipient: to, status: 'failed', detail: maskEmailError(error?.message || error) });
+    console.warn(`Falha ao enviar o e-mail "${key}".`);
+    return false;
+  }
+}
+function emailHealth() {
+  const configured = isEmailConfigured();
+  const lastSuccess = get("SELECT created_at FROM email_events WHERE status = 'sent' ORDER BY created_at DESC LIMIT 1");
+  const lastFailure = get("SELECT created_at, detail, template_key FROM email_events WHERE status = 'failed' ORDER BY created_at DESC LIMIT 1");
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const failures24h = Number(get("SELECT COUNT(*) AS count FROM email_events WHERE status = 'failed' AND created_at >= ?", [since])?.count || 0);
+  return {
+    configured,
+    notification_email: emailSettings().notification,
+    last_success_at: lastSuccess?.created_at || '',
+    last_failure_at: lastFailure?.created_at || '',
+    last_error: lastFailure?.detail || '',
+    last_error_template: lastFailure?.template_key || '',
+    failures_24h: failures24h,
+    attention: configured && Boolean(lastFailure) && (!lastSuccess || lastFailure.created_at > lastSuccess.created_at),
+  };
 }
 function jobToPublic(row) {
   if (!row) return null;
@@ -520,13 +579,9 @@ app.post('/api/applications', applicationLimiter, upload.single('resume'), async
   const ref = reference(id);
   if (isEmailConfigured()) {
     const variables = { nome: fullName, email, telefone: phone, vaga: job.title, protocolo: ref, cidade: city, estado: state };
-    sendTemplate({ key: 'application_candidate', to: email, variables })
-      .catch(() => console.warn('Falha ao enviar confirmação de candidatura.'));
+    notify({ key: 'application_candidate', to: email, variables });
     const notification = emailSettings().notification;
-    if (notification) {
-      sendTemplate({ key: 'application_team', to: notification, replyTo: email, variables })
-        .catch(() => console.warn('Falha ao enviar notificação de candidatura.'));
-    }
+    if (notification) notify({ key: 'application_team', to: notification, replyTo: email, variables });
   }
   res.status(201).json({ ok: true, reference: ref, message: 'Sua candidatura foi recebida. Obrigado por compartilhar seu perfil com a IM Personnel.' });
 });
@@ -555,13 +610,9 @@ app.post('/api/talent', talentLimiter, upload.single('resume'), (req, res) => {
   const ref = reference(id);
   if (isEmailConfigured()) {
     const variables = { nome: fullName, email, telefone: phone, area, cidade: city, estado: state, protocolo: ref };
-    sendTemplate({ key: 'talent_candidate', to: email, variables })
-      .catch(() => console.warn('Falha ao enviar confirmação do banco de talentos.'));
+    notify({ key: 'talent_candidate', to: email, variables });
     const notification = emailSettings().notification;
-    if (notification) {
-      sendTemplate({ key: 'talent_team', to: notification, replyTo: email, variables })
-        .catch(() => console.warn('Falha ao enviar notificação de novo perfil no banco de talentos.'));
-    }
+    if (notification) notify({ key: 'talent_team', to: notification, replyTo: email, variables });
   }
   res.status(201).json({ ok: true, reference: ref, message: 'Seu perfil foi recebido. Você poderá solicitar a atualização ou remoção dos dados pelo canal de privacidade.' });
 });
@@ -585,13 +636,9 @@ app.post('/api/leads', leadLimiter, async (req, res) => {
   persistDatabase();
   if (isEmailConfigured()) {
     const variables = { nome: values.contact_name, email: values.email, telefone: values.phone, empresa: values.company, servico: values.service, cidade: values.city, estado: values.state, protocolo: reference(id) };
-    sendTemplate({ key: 'lead_customer', to: values.email, variables })
-      .catch(() => console.warn('Falha ao enviar confirmação de solicitação empresarial.'));
+    notify({ key: 'lead_customer', to: values.email, variables });
     const notification = emailSettings().notification;
-    if (notification) {
-      sendTemplate({ key: 'lead_team', to: notification, replyTo: values.email, variables })
-        .catch(() => console.warn('Falha ao enviar notificação de lead.'));
-    }
+    if (notification) notify({ key: 'lead_team', to: notification, replyTo: values.email, variables });
   }
   res.status(201).json({ ok: true, reference: reference(id), message: 'Sua solicitação foi registrada. A equipe da IM Personnel poderá entrar em contato pelos dados informados.' });
 });
@@ -608,8 +655,7 @@ app.post('/api/privacy-requests', privacyLimiter, (req, res) => {
   persistDatabase();
   const ref = reference(id);
   if (isEmailConfigured()) {
-    sendTemplate({ key: 'privacy_customer', to: email, variables: { nome: fullName, email, tipo: requestType, protocolo: ref } })
-      .catch(() => console.warn('Falha ao enviar confirmação de solicitação de privacidade.'));
+    notify({ key: 'privacy_customer', to: email, variables: { nome: fullName, email, tipo: requestType, protocolo: ref } });
   }
   res.status(201).json({ ok: true, reference: ref, message: 'Sua solicitação foi registrada para análise.' });
 });
@@ -694,7 +740,7 @@ app.get('/api/admin/dashboard', requireAdmin, (_req, res) => {
     const month = publicationMap.get(event.created_at.slice(0, 7));
     if (month) month.total += 1;
   }
-  res.json({ counts, recent_applications: recentApplications, recent_leads: recentLeads, applications_by_job: applicationsByJob, publication_timeline: publicationMonths, email_configured: isEmailConfigured(), notification_email: emailSettings().notification });
+  res.json({ counts, recent_applications: recentApplications, recent_leads: recentLeads, applications_by_job: applicationsByJob, publication_timeline: publicationMonths, email_health: emailHealth() });
 });
 
 app.get('/api/admin/jobs', requireAdmin, (req, res) => {
@@ -806,9 +852,11 @@ app.get('/api/admin/applications', requireAdmin, (req, res) => {
   if (status) { conditions.push('a.status = ?'); params.push(status); }
   if (search) { conditions.push('(lower(a.full_name) LIKE ? OR lower(a.email) LIKE ? OR lower(j.title) LIKE ?)'); params.push(`%${search}%`, `%${search}%`, `%${search}%`); }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const { limit, offset } = paginationParams(req);
+  const total = Number(get(`SELECT COUNT(*) AS count FROM applications a JOIN jobs j ON j.id = a.job_id ${where}`, params)?.count || 0);
   const items = all(`SELECT a.id, a.full_name, a.email, a.phone, a.city, a.state, a.linkedin, a.cover_letter, a.status, a.internal_notes, a.resume_key, a.privacy_notice_version, a.created_at, a.updated_at, j.title AS job_title, j.slug AS job_slug
-    FROM applications a JOIN jobs j ON j.id = a.job_id ${where} ORDER BY a.created_at DESC LIMIT 300`, params);
-  res.json({ items });
+    FROM applications a JOIN jobs j ON j.id = a.job_id ${where} ORDER BY a.created_at DESC LIMIT ? OFFSET ?`, [...params, limit, offset]);
+  res.json({ items, total, limit, offset });
 });
 app.put('/api/admin/applications/:id', requireAdmin, requireCsrf, (req, res) => {
   const existing = get('SELECT id FROM applications WHERE id = ?', [asText(req.params.id, 64)]);
@@ -830,9 +878,13 @@ app.delete('/api/admin/applications/:id', requireAdmin, requireCsrf, (req, res) 
 });
 app.get('/api/admin/talent', requireAdmin, (req, res) => {
   const search = `%${asText(req.query.q, 140).toLowerCase()}%`;
-  const rows = all(`SELECT id, full_name, email, phone, city, state, area, linkedin, resume_key, consent_at, privacy_notice_version, created_at, updated_at
-    FROM talent_profiles WHERE lower(full_name) LIKE ? OR lower(email) LIKE ? OR lower(area) LIKE ? ORDER BY created_at DESC LIMIT 300`, [search, search, search]);
-  res.json({ items: rows });
+  const where = 'WHERE lower(full_name) LIKE ? OR lower(email) LIKE ? OR lower(area) LIKE ?';
+  const params = [search, search, search];
+  const { limit, offset } = paginationParams(req);
+  const total = Number(get(`SELECT COUNT(*) AS count FROM talent_profiles ${where}`, params)?.count || 0);
+  const items = all(`SELECT id, full_name, email, phone, city, state, area, linkedin, resume_key, consent_at, privacy_notice_version, created_at, updated_at
+    FROM talent_profiles ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`, [...params, limit, offset]);
+  res.json({ items, total, limit, offset });
 });
 app.delete('/api/admin/talent/:id', requireAdmin, requireCsrf, (req, res) => {
   const existing = get('SELECT id, resume_key FROM talent_profiles WHERE id = ?', [asText(req.params.id, 64)]);
@@ -851,7 +903,10 @@ app.get('/api/admin/leads', requireAdmin, (req, res) => {
   if (status) { conditions.push('status = ?'); params.push(status); }
   if (search) { conditions.push('(lower(company) LIKE ? OR lower(contact_name) LIKE ? OR lower(email) LIKE ?)'); params.push(`%${search}%`, `%${search}%`, `%${search}%`); }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-  res.json({ items: all(`SELECT * FROM leads ${where} ORDER BY created_at DESC LIMIT 300`, params) });
+  const { limit, offset } = paginationParams(req);
+  const total = Number(get(`SELECT COUNT(*) AS count FROM leads ${where}`, params)?.count || 0);
+  const items = all(`SELECT * FROM leads ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`, [...params, limit, offset]);
+  res.json({ items, total, limit, offset });
 });
 app.put('/api/admin/leads/:id', requireAdmin, requireCsrf, (req, res) => {
   const existing = get('SELECT id FROM leads WHERE id = ?', [asText(req.params.id, 64)]);
@@ -871,7 +926,17 @@ app.delete('/api/admin/leads/:id', requireAdmin, requireCsrf, (req, res) => {
   res.json({ ok: true });
 });
 app.get('/api/admin/privacy-requests', requireAdmin, (req, res) => {
-  res.json({ items: all('SELECT * FROM privacy_requests ORDER BY created_at DESC LIMIT 300') });
+  const status = asText(req.query.status, 80);
+  const search = asText(req.query.q, 140).toLowerCase();
+  const conditions = [];
+  const params = [];
+  if (status) { conditions.push('status = ?'); params.push(status); }
+  if (search) { conditions.push('(lower(full_name) LIKE ? OR lower(email) LIKE ? OR lower(request_type) LIKE ?)'); params.push(`%${search}%`, `%${search}%`, `%${search}%`); }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const { limit, offset } = paginationParams(req);
+  const total = Number(get(`SELECT COUNT(*) AS count FROM privacy_requests ${where}`, params)?.count || 0);
+  const items = all(`SELECT * FROM privacy_requests ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`, [...params, limit, offset]);
+  res.json({ items, total, limit, offset });
 });
 app.put('/api/admin/privacy-requests/:id', requireAdmin, requireCsrf, (req, res) => {
   const existing = get('SELECT id FROM privacy_requests WHERE id = ?', [asText(req.params.id, 64)]);
@@ -934,8 +999,14 @@ app.put('/api/admin/users/:id', requireAdmin, requireCsrf, (req, res) => {
   if (password && action !== 'admin_user.password_reset') audit(req, 'admin_user.password_reset', 'admin_user', existing.id, { email: existing.email });
   res.json({ user: adminUserToPublic(get(`SELECT ${adminUserColumns} FROM admin_users WHERE id = ?`, [existing.id])) });
 });
-app.get('/api/admin/audit', requireAdmin, (_req, res) => {
-  res.json({ items: all('SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 200') });
+app.get('/api/admin/audit', requireAdmin, (req, res) => {
+  const search = asText(req.query.q, 140).toLowerCase();
+  const where = search ? 'WHERE lower(actor_email) LIKE ? OR lower(action) LIKE ? OR lower(entity_type) LIKE ? OR lower(details) LIKE ?' : '';
+  const params = search ? Array(4).fill(`%${search}%`) : [];
+  const { limit, offset } = paginationParams(req, 200);
+  const total = Number(get(`SELECT COUNT(*) AS count FROM audit_log ${where}`, params)?.count || 0);
+  const items = all(`SELECT * FROM audit_log ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`, [...params, limit, offset]);
+  res.json({ items, total, limit, offset });
 });
 
 const slideColumns = 'eyebrow, location, side_label, navigation_label, title, body_text, primary_label, primary_to, secondary_label, secondary_to, footnote, image_position, image_alt, image_key, position, active';
@@ -1015,6 +1086,8 @@ app.get('/api/admin/email-settings', requireAdmin, (_req, res) => {
     SMTP_HOST: settings.host, SMTP_PORT: settings.port, SMTP_SECURE: settings.secure, SMTP_USER: settings.user,
     SMTP_PASS_SET: Boolean(settings.pass), EMAIL_FROM: settings.from, LEADS_NOTIFICATION_EMAIL: settings.notification,
     configured: isEmailConfigured(), stored_in_panel: storedInPanel,
+    health: emailHealth(),
+    recent_events: all('SELECT id, template_key, kind, recipient, status, detail, created_at FROM email_events ORDER BY created_at DESC LIMIT 25'),
     templates: all('SELECT key, label, audience, subject, body, enabled, updated_at FROM email_templates ORDER BY rowid ASC').map((row) => ({ ...row, enabled: Boolean(Number(row.enabled)), variables: templateVariables.get(row.key) || [] })),
   });
 });
@@ -1058,14 +1131,16 @@ app.post('/api/admin/email-settings/test', requireAdmin, requireCsrf, async (req
   const to = asEmail(req.body?.to) || settings.notification || settings.from.replace(/^[^<]*<([^>]*)>$/, '$1');
   if (!validEmail(to)) return res.status(400).json({ error: 'Informe um destinatário válido para o teste.' });
   if (!isEmailConfigured()) return res.status(400).json({ error: 'Configure o servidor SMTP e o remetente antes de testar.' });
-  const redact = (message) => (settings.pass ? message.split(settings.pass).join('***') : message);
   try {
     await verifyTransport();
     const sent = await sendMessage({ to, subject: 'Teste de configuração de e-mail • IM Personnel', text: `Mensagem de teste enviada pelo painel administrativo em ${new Intl.DateTimeFormat('pt-BR', { dateStyle: 'long', timeStyle: 'short' }).format(new Date())}.\n\nSe você recebeu esta mensagem, o SMTP está configurado corretamente.` });
+    recordEmailEvent({ kind: 'test', recipient: to, status: sent ? 'sent' : 'skipped', detail: sent ? '' : 'transporte indisponível' });
     audit(req, 'email_settings.test_sent', 'settings', 'email', { to });
     res.json({ ok: Boolean(sent), message: `Enviamos uma mensagem de teste para ${to}.` });
   } catch (error) {
-    res.status(400).json({ error: `Não foi possível enviar o teste: ${redact(error?.message || 'falha desconhecida')}` });
+    const detail = maskEmailError(error?.message || 'falha desconhecida');
+    recordEmailEvent({ kind: 'test', recipient: to, status: 'failed', detail });
+    res.status(400).json({ error: `Não foi possível enviar o teste: ${detail}` });
   }
 });
 app.get('/api/admin/email-templates', requireAdmin, (_req, res) => {
