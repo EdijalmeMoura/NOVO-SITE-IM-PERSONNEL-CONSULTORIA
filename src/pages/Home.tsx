@@ -30,7 +30,7 @@ export function Home() {
       telephone: companyContact.phoneHref, email: companyContact.email,
       address: { '@type': 'PostalAddress', streetAddress: companyContact.addressLine, addressLocality: companyContact.city, addressRegion: companyContact.regionCode, addressCountry: companyContact.countryCode },
       contactPoint: { '@type': 'ContactPoint', telephone: companyContact.phoneHref, email: companyContact.email, contactType: 'customer service', availableLanguage: 'Portuguese' },
-      sameAs: ['https://br.linkedin.com/company/impersonnel-consultoria'], areaServed: { '@type': 'Place', name: 'Recife, Pernambuco, Brasil' },
+      sameAs: ['https://br.linkedin.com/company/impersonnel-consultoria', 'https://www.instagram.com/impersonnel_consultoria'], areaServed: { '@type': 'Place', name: 'Recife, Pernambuco, Brasil' },
     });
     document.head.appendChild(script);
     return () => script.remove();
@@ -136,7 +136,7 @@ export function Home() {
       <section className="insights-section section-pad">
         <div className="container">
           <div className="insights-heading"><SectionHeading eyebrow="05 / CONHECIMENTO EM MOVIMENTO" title="Ideias para pensar o trabalho de outro jeito." text="Conversas sobre pessoas, liderança e organizações — com espaço para novas perspectivas." /><Link className="text-link" to="/conteudos">Ver todos os conteúdos <ArrowUpRight size={17} /></Link></div>
-          {publicInsights.length ? <div className="insights-grid">{publicInsights.map((insight, index) => <Link className={`insight-card insight-card-${index + 1}`} to={`/conteudos/${insight.slug}`} key={insight.slug}><div className="insight-art" aria-hidden="true"><span className="insight-art-label">IM / THINKING</span><span className="insight-art-mark">{String(index + 1).padStart(2, '0')}</span><div className="insight-art-orbit" /></div><div className="insight-card-copy"><div className="insight-meta"><span>{insight.category}</span><span>{insight.minutes} min de leitura</span></div><h3>{insight.title}</h3><span className="insight-read">Ler conteúdo <ArrowUpRight size={15} /></span></div></Link>)}</div> : <div className="insights-empty"><span className="eyebrow">NOVAS IDEIAS EM BREVE</span><p>Conteúdos e perspectivas serão publicados por aqui.</p></div>}
+          {publicInsights.length ? <div className="insights-grid">{publicInsights.map((insight, index) => <Link className={`insight-card insight-card-${index + 1}`} to={`/conteudos/${insight.slug}`} key={insight.slug}><div className={`insight-art ${insight.image_url ? 'insight-art-photo' : ''}`} aria-hidden={insight.image_url ? undefined : 'true'}>{insight.image_url ? <img src={insight.image_url} alt={insight.image_alt || insight.title} loading="lazy" /> : <><span className="insight-art-label">IM / THINKING</span><span className="insight-art-mark">{String(index + 1).padStart(2, '0')}</span><div className="insight-art-orbit" /></>}</div><div className="insight-card-copy"><div className="insight-meta"><span>{insight.category}</span><span>{insight.minutes} min de leitura</span></div><h3>{insight.title}</h3><span className="insight-read">Ler conteúdo <ArrowUpRight size={15} /></span></div></Link>)}</div> : <div className="insights-empty"><span className="eyebrow">NOVAS IDEIAS EM BREVE</span><p>Conteúdos e perspectivas serão publicados por aqui.</p></div>}
         </div>
       </section>
 
