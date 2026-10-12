@@ -13,6 +13,7 @@ const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'im-personnel-operations-'
 const adminPassword = 'StrongAdminPass123!';
 const smtpPassword = 'SenhaSmtpDeTeste456';
 const seededApplications = 5;
+let resumeName;
 let port;
 let child;
 let baseUrl;
@@ -29,11 +30,15 @@ before(async () => {
   const { salt, digest } = hashPassword(adminPassword);
   run('INSERT INTO admin_users (id, email, salt, password_hash, created_at) VALUES (?, ?, ?, ?, ?)', [crypto.randomUUID(), 'admin@example.test', salt, digest, created]);
   // Massa de teste gravada direto na base: as listas precisam de mais registros do que cabe em uma página.
+  const resumesDir = path.join(dataDir, 'private-resumes');
+  fs.mkdirSync(resumesDir, { recursive: true, mode: 0o700 });
+  resumeName = `${crypto.randomUUID()}.pdf`;
+  fs.writeFileSync(path.join(resumesDir, resumeName), Buffer.from('%PDF-1.4 currículo de teste\n%%EOF'));
   const jobId = crypto.randomUUID();
   run('INSERT INTO jobs (id, slug, title, area, city, state, modality, employment_type, summary, published, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)', [jobId, 'vaga-de-teste', 'Vaga de teste', 'Recursos Humanos', 'Recife', 'PE', 'Presencial', 'CLT', 'Resumo da vaga de teste.', created, created]);
   for (let index = 1; index <= seededApplications; index += 1) {
     run('INSERT INTO applications (id, job_id, full_name, email, phone, city, state, linkedin, cover_letter, answers, resume_key, status, internal_notes, privacy_notice_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [crypto.randomUUID(), jobId, `Pessoa Candidata ${index}`, `candidata${index}@example.test`, '+55 81 90000-0000', 'Recife', 'PE', `https://www.linkedin.com/in/candidata-${index}`, '', '{}', `${crypto.randomUUID()}.pdf`, 'Candidatura recebida', '', '2026-10-v1', `2026-0${index}-01T12:00:00.000Z`, created]);
+      [crypto.randomUUID(), jobId, `Pessoa Candidata ${index}`, `candidata${index}@example.test`, '+55 81 90000-0000', 'Recife', 'PE', `https://www.linkedin.com/in/candidata-${index}`, index === 1 ? 'Tenho experiência com; equipes e processos.' : '', '{}', index === 1 ? resumeName : `${crypto.randomUUID()}.pdf`, 'Candidatura recebida', '', '2026-10-v1', `2026-0${index}-01T12:00:00.000Z`, created]);
     run('INSERT INTO talent_profiles (id, full_name, email, phone, city, state, area, linkedin, resume_key, consent_at, privacy_notice_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [crypto.randomUUID(), `Talento ${index}`, `talento${index}@example.test`, '+55 81 90000-0000', 'Olinda', 'PE', 'Logística', '', `${crypto.randomUUID()}.pdf`, created, '2026-10-v1', `2026-0${index}-02T12:00:00.000Z`, created]);
     run('INSERT INTO leads (id, contact_name, contact_role, company, email, phone, segment, city, state, service, position_count, need, desired_timeline, status, assigned_to, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -192,6 +197,62 @@ test('falha de envio de e-mail fica registrada e visível no painel', { timeout:
   assert.ok(keptHistory.recent_events.some((event) => event.status === 'failed'), 'o histórico permanece para consulta depois de desligar o SMTP');
 });
 
+test('a equipe baixa os dados em CSV e o backup completo em ZIP', { timeout: 30_000 }, async () => {
+  const csv = await fetch(`${baseUrl}/api/admin/export/applications.csv`, { headers: { cookie } });
+  assert.equal(csv.status, 200);
+  assert.match(csv.headers.get('content-type'), /text\/csv/);
+  assert.match(csv.headers.get('content-disposition'), /attachment; filename="candidaturas-\d{4}-\d{2}-\d{2}\.csv"/);
+  // response.text() descarta o BOM por especificação: aqui os bytes são lidos direto.
+  const csvBytes = Buffer.from(await csv.arrayBuffer());
+  assert.equal(csvBytes.subarray(0, 3).toString('hex'), 'efbbbf', 'o arquivo começa com BOM para o Excel abrir com acentuação correta');
+  const text = csvBytes.toString('utf-8').replace(/^\ufeff/, '');
+  assert.ok(text.includes('ç') || text.includes('ã'), 'acentuação preservada no arquivo');
+  const lines = text.trim().split('\r\n');
+  assert.equal(lines.length, seededApplications + 1, 'uma linha por registro mais o cabeçalho');
+  assert.ok(lines[0].startsWith('Protocolo;Recebida em;Status'), `cabeçalho inesperado: ${lines[0]}`);
+  assert.ok(text.includes('Pessoa Candidata 5'), 'a exportação leva todos os registros, não só a página visível');
+  assert.ok(text.includes('"Tenho experiência com; equipes e processos."'), 'ponto e vírgula dentro do texto não quebra as colunas');
+  assert.ok(text.includes('Sim'), 'o currículo anexado é sinalizado');
+
+  const withFilter = await fetch(`${baseUrl}/api/admin/export/applications.csv?q=Pessoa Candidata 3`, { headers: { cookie } });
+  const filteredText = Buffer.from(await withFilter.arrayBuffer()).toString('utf-8').replace(/^\ufeff/, '');
+  assert.equal(filteredText.trim().split('\r\n').length, 2, 'a exportação respeita a busca da tela');
+
+  // A auditoria guarda JSON com aspas: é o caso que exige escape dobrado.
+  const auditCsv = await fetch(`${baseUrl}/api/admin/export/audit.csv`, { headers: { cookie } });
+  const auditText = Buffer.from(await auditCsv.arrayBuffer()).toString('utf-8').replace(/^\ufeff/, '');
+  assert.ok(auditText.includes('""index""'), 'aspas dentro do campo são escapadas');
+  assert.ok(auditText.trim().split('\r\n').length > 1);
+
+  const unknown = await fetch(`${baseUrl}/api/admin/export/inexistente.csv`, { headers: { cookie } });
+  assert.equal(unknown.status, 404, 'tipo de exportação desconhecido é recusado');
+
+  const empty = await fetch(`${baseUrl}/api/admin/export/talent.csv?q=ninguem-com-esse-nome`, { headers: { cookie } });
+  assert.equal(empty.status, 404, 'sem registros para os filtros, a exportação avisa em vez de entregar arquivo vazio');
+
+  const backup = await fetch(`${baseUrl}/api/admin/backup`, { headers: { cookie } });
+  assert.equal(backup.status, 200);
+  assert.equal(backup.headers.get('content-type'), 'application/zip');
+  assert.match(backup.headers.get('content-disposition'), /attachment; filename="backup-im-personnel-\d{4}-\d{2}-\d{2}\.zip"/);
+  const zip = Buffer.from(await backup.arrayBuffer());
+  assert.equal(zip.subarray(0, 4).toString('hex'), '504b0304', 'assinatura de arquivo ZIP');
+  const names = zipEntryNames(zip);
+  assert.ok(names.includes('LEIA-ME.txt'), 'o backup traz instruções de restauração');
+  assert.ok(names.includes('im-personnel.sqlite'), 'a base de dados vai no backup');
+  assert.ok(names.includes(`curriculos/${resumeName}`), 'os currículos recebidos vão no backup');
+  const manifest = zipRead(zip, 'LEIA-ME.txt').toString('utf-8');
+  assert.match(manifest, /applications: 5/, 'o manifesto informa a quantidade de registros por tabela');
+  assert.match(manifest, /COMO RESTAURAR/);
+
+  const exported = await adminGet('/api/admin/audit?q=data.exported');
+  assert.ok(exported.total >= 1, 'a exportação entra na auditoria');
+  const downloaded = await adminGet('/api/admin/audit?q=backup.downloaded');
+  assert.ok(downloaded.total >= 1, 'o backup entra na auditoria');
+
+  const anonymous = await fetch(`${baseUrl}/api/admin/backup`);
+  assert.equal(anonymous.status, 401, 'sem sessão não há backup');
+});
+
 test('vagas e conteúdos têm prévia própria para compartilhamento', { timeout: 30_000 }, async () => {
   const job = await fetch(`${baseUrl}/vagas/vaga-de-teste`).then((response) => response.text());
   assert.match(job, /<meta property="og:title" content="Vaga de teste em Recife, PE \| IM Personnel" \/>/, 'o cargo e a cidade aparecem na prévia');
@@ -220,6 +281,36 @@ test('vagas e conteúdos têm prévia própria para compartilhamento', { timeout
   assert.match(home, /<link rel="canonical" href="https:\/\/impersonnel\.com\.br\/" \/>/);
   assert.ok(home.includes('id="root"'), 'o HTML entregue continua sendo o da aplicação');
 });
+
+// Leitores mínimos do ZIP: percorrem o diretório central para conferir o que foi arquivado.
+function zipEntries(zip) {
+  const end = zip.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  assert.ok(end > 0, 'diretório central do ZIP não encontrado');
+  const count = zip.readUInt16LE(end + 10);
+  let cursor = zip.readUInt32LE(end + 16);
+  const entries = [];
+  for (let index = 0; index < count; index += 1) {
+    const nameLength = zip.readUInt16LE(cursor + 28);
+    const extraLength = zip.readUInt16LE(cursor + 30);
+    const commentLength = zip.readUInt16LE(cursor + 32);
+    const localOffset = zip.readUInt32LE(cursor + 42);
+    const size = zip.readUInt32LE(cursor + 24);
+    entries.push({ name: zip.subarray(cursor + 46, cursor + 46 + nameLength).toString('utf-8'), localOffset, size });
+    cursor += 46 + nameLength + extraLength + commentLength;
+  }
+  return entries;
+}
+function zipEntryNames(zip) {
+  return zipEntries(zip).map((entry) => entry.name);
+}
+function zipRead(zip, name) {
+  const entry = zipEntries(zip).find((item) => item.name === name);
+  assert.ok(entry, `entrada ${name} ausente no backup`);
+  const nameLength = zip.readUInt16LE(entry.localOffset + 26);
+  const extraLength = zip.readUInt16LE(entry.localOffset + 28);
+  const start = entry.localOffset + 30 + nameLength + extraLength;
+  return zip.subarray(start, start + entry.size);
+}
 
 async function waitForEvent(templateKey, status) {
   const deadline = Date.now() + 12_000;

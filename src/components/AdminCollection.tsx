@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Search } from 'lucide-react';
+import { ArrowDownToLine, Search } from 'lucide-react';
 import { apiGet } from '../lib/api';
 
 type CollectionResponse<T> = { items?: T[]; total?: number };
@@ -112,4 +112,15 @@ export function CollectionFooter({ shown, total, loading, hasMore, onLoadMore, l
     <span>Mostrando <strong>{shown}</strong> de <strong>{total}</strong> {label}{hasMore ? '' : ' — fim da lista'}</span>
     {hasMore && <button className="admin-load-more" type="button" disabled={loading} onClick={onLoadMore}>{loading ? 'Carregando…' : 'Carregar mais registros'}</button>}
   </div>;
+}
+
+// Exporta exatamente o que está filtrado na tela: a busca e o status seguem no endereço.
+export function CollectionExport({ kind, query, status, label = 'Exportar CSV' }: { kind: string; query?: string; status?: string; label?: string }) {
+  const params = new URLSearchParams();
+  if (query?.trim()) params.set('q', query.trim());
+  if (status) params.set('status', status);
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  return <a className="admin-export-link" href={`/api/admin/export/${kind}.csv${suffix}`} download>
+    <ArrowDownToLine size={14} /> {label}
+  </a>;
 }

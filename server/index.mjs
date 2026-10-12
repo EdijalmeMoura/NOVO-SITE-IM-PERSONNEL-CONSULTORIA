@@ -12,6 +12,7 @@ import { all, databaseFilePath, get, initializeDatabase, persistDatabase, run } 
 import { hashPassword, verifyPassword } from './auth.mjs';
 import { ensureBootstrapAdmin } from './bootstrap.mjs';
 import { emailSettings, isEmailConfigured, readTemplate, renderTemplate, resetMailer, sendMessage, sendTemplate, verifyTransport } from './mailer.mjs';
+import { buildZip, folderEntries } from './backup.mjs';
 import insightDefaults from '../content/insights.json' with { type: 'json' };
 import heroSlideDefaults from '../content/hero-slides.json' with { type: 'json' };
 import emailTemplateDefaults from '../content/email-templates.json' with { type: 'json' };
@@ -1085,6 +1086,186 @@ app.put('/api/admin/users/:id', requireAdmin, requireCsrf, (req, res) => {
   if (password && action !== 'admin_user.password_reset') audit(req, 'admin_user.password_reset', 'admin_user', existing.id, { email: existing.email });
   res.json({ user: adminUserToPublic(get(`SELECT ${adminUserColumns} FROM admin_users WHERE id = ?`, [existing.id])) });
 });
+// --- Exportação e backup -------------------------------------------------------
+// CSV com ponto e vírgula e BOM: é o que o Excel em português abre com acentuação correta.
+const CSV_ROW_LIMIT = 20_000;
+function sendCsv(res, filename, columns, rows) {
+  const cell = (value) => {
+    const text = value === null || value === undefined ? '' : String(value);
+    return /[";\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+  };
+  const lines = [columns.map((column) => cell(column.label)).join(';')];
+  for (const row of rows) lines.push(columns.map((column) => cell(column.value(row))).join(';'));
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(`\uFEFF${lines.join('\r\n')}\r\n`);
+}
+const exportKinds = {
+  applications: {
+    label: 'candidaturas',
+    columns: [
+      ['Protocolo', (row) => reference(row.id)], ['Recebida em', (row) => row.created_at], ['Status', (row) => row.status],
+      ['Nome', (row) => row.full_name], ['E-mail', (row) => row.email], ['Telefone', (row) => row.phone],
+      ['Cidade', (row) => row.city], ['UF', (row) => row.state], ['LinkedIn', (row) => row.linkedin],
+      ['Vaga', (row) => row.job_title], ['Currículo anexado', (row) => (row.resume_key ? 'Sim' : 'Não')],
+      ['Apresentação', (row) => row.cover_letter], ['Observação interna', (row) => row.internal_notes],
+      ['Aviso de privacidade', (row) => row.privacy_notice_version],
+    ],
+    count: (req) => {
+      const status = asText(req.query.status, 80);
+      const search = asText(req.query.q, 140).toLowerCase();
+      const conditions = [];
+      const params = [];
+      if (status) { conditions.push('a.status = ?'); params.push(status); }
+      if (search) { conditions.push('(lower(a.full_name) LIKE ? OR lower(a.email) LIKE ? OR lower(j.title) LIKE ?)'); params.push(`%${search}%`, `%${search}%`, `%${search}%`); }
+      const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+      return { total: Number(get(`SELECT COUNT(*) AS count FROM applications a JOIN jobs j ON j.id = a.job_id ${where}`, params)?.count || 0), where, params };
+    },
+    select: (where, params) => all(`SELECT a.*, j.title AS job_title FROM applications a JOIN jobs j ON j.id = a.job_id ${where} ORDER BY a.created_at DESC LIMIT ${CSV_ROW_LIMIT}`, params),
+  },
+  talent: {
+    label: 'banco-de-talentos',
+    columns: [
+      ['Nome', (row) => row.full_name], ['E-mail', (row) => row.email], ['Telefone', (row) => row.phone],
+      ['Cidade', (row) => row.city], ['UF', (row) => row.state], ['Área', (row) => row.area], ['LinkedIn', (row) => row.linkedin],
+      ['Autorização em', (row) => row.consent_at], ['Currículo anexado', (row) => (row.resume_key ? 'Sim' : 'Não')],
+      ['Aviso de privacidade', (row) => row.privacy_notice_version], ['Enviado em', (row) => row.created_at],
+    ],
+    count: (req) => {
+      const search = `%${asText(req.query.q, 140).toLowerCase()}%`;
+      return { total: Number(get('SELECT COUNT(*) AS count FROM talent_profiles WHERE lower(full_name) LIKE ? OR lower(email) LIKE ? OR lower(area) LIKE ?', [search, search, search])?.count || 0), where: '', params: [search, search, search] };
+    },
+    select: (_where, params) => all(`SELECT * FROM talent_profiles WHERE lower(full_name) LIKE ? OR lower(email) LIKE ? OR lower(area) LIKE ? ORDER BY created_at DESC LIMIT ${CSV_ROW_LIMIT}`, params),
+  },
+  leads: {
+    label: 'solicitacoes-empresariais',
+    columns: [
+      ['Recebido em', (row) => row.created_at], ['Etapa', (row) => row.status], ['Empresa', (row) => row.company],
+      ['Contato', (row) => row.contact_name], ['Cargo', (row) => row.contact_role], ['E-mail', (row) => row.email],
+      ['Telefone', (row) => row.phone], ['Segmento', (row) => row.segment], ['Cidade', (row) => row.city], ['UF', (row) => row.state],
+      ['Serviço', (row) => row.service], ['Posições', (row) => row.position_count], ['Prazo desejado', (row) => row.desired_timeline],
+      ['Necessidade', (row) => row.need], ['Responsável', (row) => row.assigned_to], ['Notas', (row) => row.notes],
+    ],
+    count: (req) => {
+      const status = asText(req.query.status, 80);
+      const search = asText(req.query.q, 140).toLowerCase();
+      const conditions = [];
+      const params = [];
+      if (status) { conditions.push('status = ?'); params.push(status); }
+      if (search) { conditions.push('(lower(company) LIKE ? OR lower(contact_name) LIKE ? OR lower(email) LIKE ?)'); params.push(`%${search}%`, `%${search}%`, `%${search}%`); }
+      return { total: Number(get(`SELECT COUNT(*) AS count FROM leads ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''}`, params)?.count || 0), where: conditions.length ? `WHERE ${conditions.join(' AND ')}` : '', params };
+    },
+    select: (where, params) => all(`SELECT * FROM leads ${where} ORDER BY created_at DESC LIMIT ${CSV_ROW_LIMIT}`, params),
+  },
+  privacy: {
+    label: 'pedidos-de-privacidade',
+    columns: [
+      ['Protocolo', (row) => reference(row.id)], ['Recebido em', (row) => row.created_at], ['Tipo', (row) => row.request_type],
+      ['Nome', (row) => row.full_name], ['E-mail', (row) => row.email], ['Detalhes', (row) => row.details],
+      ['Status', (row) => row.status], ['Encaminhamento interno', (row) => row.internal_notes],
+    ],
+    count: (req) => {
+      const status = asText(req.query.status, 80);
+      const search = asText(req.query.q, 140).toLowerCase();
+      const conditions = [];
+      const params = [];
+      if (status) { conditions.push('status = ?'); params.push(status); }
+      if (search) { conditions.push('(lower(full_name) LIKE ? OR lower(email) LIKE ? OR lower(request_type) LIKE ?)'); params.push(`%${search}%`, `%${search}%`, `%${search}%`); }
+      return { total: Number(get(`SELECT COUNT(*) AS count FROM privacy_requests ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''}`, params)?.count || 0), where: conditions.length ? `WHERE ${conditions.join(' AND ')}` : '', params };
+    },
+    select: (where, params) => all(`SELECT * FROM privacy_requests ${where} ORDER BY created_at DESC LIMIT ${CSV_ROW_LIMIT}`, params),
+  },
+  jobs: {
+    label: 'vagas',
+    columns: [
+      ['Título', (row) => row.title], ['Identificador', (row) => row.slug], ['Área', (row) => row.area],
+      ['Cidade', (row) => row.city], ['UF', (row) => row.state], ['Modalidade', (row) => row.modality],
+      ['Tipo', (row) => row.employment_type], ['Publicada', (row) => (Number(row.published) ? 'Sim' : 'Não')],
+      ['Destaque', (row) => (Number(row.featured) ? 'Sim' : 'Não')], ['Encerra em', (row) => row.expires_at],
+      ['Criada em', (row) => row.created_at], ['Atualizada em', (row) => row.updated_at],
+      ['Candidaturas', (row) => Number(get('SELECT COUNT(*) AS count FROM applications WHERE job_id = ?', [row.id])?.count || 0)],
+    ],
+    count: () => ({ total: Number(get('SELECT COUNT(*) AS count FROM jobs')?.count || 0), where: '', params: [] }),
+    select: () => all(`SELECT * FROM jobs ORDER BY created_at DESC LIMIT ${CSV_ROW_LIMIT}`),
+  },
+  audit: {
+    label: 'auditoria',
+    columns: [
+      ['Data', (row) => row.created_at], ['Usuário', (row) => row.actor_email], ['Ação', (row) => row.action],
+      ['Registro', (row) => row.entity_type], ['Identificador', (row) => row.entity_id], ['Detalhes', (row) => row.details],
+    ],
+    count: (req) => {
+      const search = asText(req.query.q, 140).toLowerCase();
+      return { total: Number(get(`SELECT COUNT(*) AS count FROM audit_log ${search ? 'WHERE lower(actor_email) LIKE ? OR lower(action) LIKE ? OR lower(entity_type) LIKE ? OR lower(details) LIKE ?' : ''}`, search ? Array(4).fill(`%${search}%`) : [])?.count || 0), where: search ? 'WHERE lower(actor_email) LIKE ? OR lower(action) LIKE ? OR lower(entity_type) LIKE ? OR lower(details) LIKE ?' : '', params: search ? Array(4).fill(`%${search}%`) : [] };
+    },
+    select: (where, params) => all(`SELECT * FROM audit_log ${where} ORDER BY created_at DESC LIMIT ${CSV_ROW_LIMIT}`, params),
+  },
+};
+app.get('/api/admin/export/:kind', requireAdmin, (req, res) => {
+  const kind = asText(req.params.kind, 40).replace(/\.csv$/i, '');
+  const source = exportKinds[kind];
+  if (!source) return res.status(404).json({ error: 'Exportação não disponível para este tipo de dado.' });
+  const { total, where, params } = source.count(req);
+  if (total === 0) return res.status(404).json({ error: 'Não há registros para exportar com os filtros atuais.' });
+  // O corte existe para o servidor não montar um arquivo gigante em memória. Aqui ele é explícito.
+  if (total > CSV_ROW_LIMIT) return res.status(413).json({ error: `Esta exportação tem ${total} registros e o limite por arquivo é ${CSV_ROW_LIMIT}. Use a busca ou o filtro para reduzir o conjunto.` });
+  const rows = source.select(where, params);
+  const filename = `${source.label}-${activeDateFilter()}.csv`;
+  audit(req, 'data.exported', 'export', kind, { total: rows.length, filters: { q: asText(req.query.q, 140), status: asText(req.query.status, 80) } });
+  sendCsv(res, filename, source.columns.map(([label, value]) => ({ label, value })), rows);
+});
+
+// Backup completo: base de dados, currículos privados e imagens de conteúdo.
+app.get('/api/admin/backup', requireAdmin, (req, res, next) => {
+  try {
+    const databaseBuffer = fs.readFileSync(databaseFilePath());
+    const resumeFiles = folderEntries(resumesPath, 'curriculos/', { skip: new Set(['.gitkeep']) });
+    const imageFiles = folderEntries(contentImagesPath, 'imagens/', { skip: new Set(['.gitkeep']) });
+    const counts = Object.fromEntries(['jobs', 'articles', 'applications', 'talent_profiles', 'leads', 'privacy_requests', 'admin_users', 'hero_slides', 'email_templates', 'audit_log'].map((table) => [table, Number(get(`SELECT COUNT(*) AS count FROM ${table}`)?.count || 0)]));
+    const manifest = [
+      'BACKUP DO SITE IM PERSONNEL',
+      `Gerado em: ${new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}`,
+      `Banco: ${path.basename(databaseFilePath())} (${databaseBytes(databaseBuffer.length)})`,
+      '',
+      'CONTEÚDO DO ARQUIVO',
+      `- ${path.basename(databaseFilePath())}: base SQLite com todos os cadastros`,
+      `- curriculos/: ${resumeFiles.length} arquivo(s) recebido(s) em candidaturas e no banco de talentos`,
+      `- imagens/: ${imageFiles.length} imagem(ns) de conteúdo e de destaques da página inicial`,
+      '',
+      'REGISTROS NO BANCO',
+      ...Object.entries(counts).map(([table, total]) => `- ${table}: ${total}`),
+      '',
+      'COMO RESTAURAR',
+      '1. Aponte DATA_DIR para uma pasta persistente.',
+      `2. Coloque o arquivo ${path.basename(databaseFilePath())} nessa pasta.`,
+      '3. Copie curriculos/ para private-resumes/ e imagens/ para content-images/.',
+      '4. Inicie a aplicação: as migrações pendentes são aplicadas automaticamente.',
+      '',
+      'AVISO',
+      'Este arquivo contém dados pessoais e currículos. Guarde em local restrito e',
+      'descarte as cópias antigas conforme os prazos de retenção definidos.',
+    ].join('\n');
+    const entries = [
+      { name: 'LEIA-ME.txt', read: () => Buffer.from(manifest, 'utf-8') },
+      { name: path.basename(databaseFilePath()), read: () => databaseBuffer },
+      ...resumeFiles,
+      ...imageFiles,
+    ];
+    audit(req, 'backup.downloaded', 'backup', activeDateFilter(), { records: counts, files: resumeFiles.length + imageFiles.length, database_bytes: databaseBuffer.length });
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="backup-im-personnel-${activeDateFilter()}.zip"`);
+    res.setHeader('Cache-Control', 'no-store');
+    for (const chunk of buildZip(entries)) res.write(chunk);
+    res.end();
+  } catch (error) { next(error); }
+});
+function databaseBytes(bytes) {
+  if (bytes < 1024) return `${bytes} bytes`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} kB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1).replace('.', ',')} MB`;
+}
+
 app.get('/api/admin/audit', requireAdmin, (req, res) => {
   const search = asText(req.query.q, 140).toLowerCase();
   const where = search ? 'WHERE lower(actor_email) LIKE ? OR lower(action) LIKE ? OR lower(entity_type) LIKE ? OR lower(details) LIKE ?' : '';

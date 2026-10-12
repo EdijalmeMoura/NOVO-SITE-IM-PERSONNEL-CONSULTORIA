@@ -1474,3 +1474,16 @@ img { max-width: 100%; }
 
 /* Otimização da imagem no navegador */
 .admin-image-note { display: flex; align-items: center; gap: 6px; margin: 6px 0 0; padding: 6px 9px; border-left: 2px solid #6f8f75; border-radius: 4px; color: #556b59; background: #f4f8f4; font-size: 9px; }
+
+/* Exportação em CSV e backup */
+.admin-export-link { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 0 11px; border: 1px solid #e0e0e0; border-radius: 5px; color: #4a4a4a; background: #fafafa; font-size: 9px; font-weight: 700; white-space: nowrap; }
+.admin-export-link:hover { border-color: #cfcfcf; background: #f4f4f4; }
+.admin-backup-card { margin-bottom: 12px; }
+.admin-backup-card p { margin: 0 0 12px; color: #6f6f6f; font-size: 10px; line-height: 1.7; }
+.admin-backup-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.admin-backup-note { display: flex; align-items: center; gap: 6px; margin-top: 11px; color: #8b8b8b; font-size: 9px; }
+.admin-backup-note svg { flex: none; color: #6f8f75; }
+@media (max-width: 900px) {
+  .admin-export-link { width: 100%; justify-content: center; }
+  .admin-backup-actions { flex-direction: column; }
+}
