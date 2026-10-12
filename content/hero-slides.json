@@ -14,8 +14,9 @@
     "primary": { "to": "/solucoes", "label": "Encontre sua solução" },
     "secondary": { "to": "/vagas", "label": "Explore oportunidades" },
     "footnote": "Pessoas no centro. Negócios em movimento.",
-    "imagePosition": "center 52%",
-    "imageAlt": "Lideranças e profissionais colaborando em uma conversa de estratégia"
+    "imagePosition": "82% 52%",
+    "imageAlt": "Lideranças e profissionais colaborando em uma conversa de estratégia",
+    "imageUrl": "/images/hero-team.jpg"
   },
   {
     "slug": "recrutamento",
@@ -31,8 +32,9 @@
     "primary": { "to": "/servicos/recrutamento-e-selecao", "label": "Conheça o serviço" },
     "secondary": { "to": "/solicitar-proposta", "label": "Falar com a equipe" },
     "footnote": "Contexto, critério e proximidade em cada busca.",
-    "imagePosition": "42% 52%",
-    "imageAlt": "Profissionais em uma conversa de trabalho"
+    "imagePosition": "82% 52%",
+    "imageAlt": "Recrutadora e profissional conversam durante uma entrevista de seleção",
+    "imageUrl": "/images/hero-recruitment.jpg"
   },
   {
     "slug": "liderancas",
@@ -48,8 +50,9 @@
     "primary": { "to": "/servicos/executive-search", "label": "Conheça o Executive Search" },
     "secondary": { "to": "/solicitar-proposta", "label": "Conversar sobre a busca" },
     "footnote": "Liderança é direção, presença e futuro compartilhado.",
-    "imagePosition": "58% 52%",
-    "imageAlt": "Profissionais trocando perspectivas em uma reunião"
+    "imagePosition": "82% 52%",
+    "imageAlt": "Lideranças trocam perspectivas em reunião de estratégia",
+    "imageUrl": "/images/hero-leadership.jpg"
   },
   {
     "slug": "industrial",
@@ -65,8 +68,9 @@
     "primary": { "to": "/servicos/selecao-industrial", "label": "Ver solução industrial" },
     "secondary": { "to": "/solicitar-proposta", "label": "Solicitar uma conversa" },
     "footnote": "Rigor técnico sem perder de vista as pessoas.",
-    "imagePosition": "70% 52%",
-    "imageAlt": "Equipe de profissionais em colaboração"
+    "imagePosition": "82% 52%",
+    "imageAlt": "Profissionais de operação e engenharia revisam um tablet em ambiente industrial",
+    "imageUrl": "/images/hero-industrial.jpg"
   },
   {
     "slug": "gestao",
@@ -82,8 +86,9 @@
     "primary": { "to": "/servicos/consultoria-de-rh", "label": "Conheça a consultoria" },
     "secondary": { "to": "/solucoes", "label": "Ver todas as soluções" },
     "footnote": "Gestão que combina intenção, processo e realidade.",
-    "imagePosition": "31% 52%",
-    "imageAlt": "Pessoas discutindo estratégia em ambiente de trabalho"
+    "imagePosition": "82% 52%",
+    "imageAlt": "Equipe de consultoria discute estratégia de pessoas ao redor de uma mesa",
+    "imageUrl": "/images/hero-consulting.jpg"
   },
   {
     "slug": "oportunidades",
@@ -99,7 +104,8 @@
     "primary": { "to": "/vagas", "label": "Ver vagas disponíveis" },
     "secondary": { "to": "/curriculo", "label": "Apresentar meu perfil" },
     "footnote": "Talentos em movimento. Possibilidades abertas.",
-    "imagePosition": "52% 52%",
-    "imageAlt": "Profissionais reunidos em uma conversa colaborativa"
+    "imagePosition": "82% 52%",
+    "imageAlt": "Profissional conversa com recrutadora sobre novos caminhos de carreira",
+    "imageUrl": "/images/hero-careers.jpg"
   }
 ]

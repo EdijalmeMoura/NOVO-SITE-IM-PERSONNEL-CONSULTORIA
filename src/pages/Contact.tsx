@@ -1,8 +1,9 @@
 import { useState, type FormEvent } from 'react';
-import { ArrowRight, ArrowUpRight, Check, Linkedin, MapPin, MessageCircle, ShieldCheck } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, Check, Linkedin, Mail, MapPin, MessageCircle, Phone, ShieldCheck } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { services } from '../data';
 import { apiPost } from '../lib/api';
+import { companyContact } from '../lib/contact';
 import { PageIntro } from '../components/PageIntro';
 import { usePageMeta } from '../hooks/usePageMeta';
 
@@ -35,7 +36,13 @@ export function Contact() {
           <div className="form-submit-row"><button className="button button-primary" type="submit" disabled={busy}>{busy ? 'Enviando solicitação…' : 'Enviar solicitação'} <ArrowUpRight size={17} /></button><span>Retorno pelo canal informado</span></div>
         </form>}
       </div>
-      <aside className="contact-aside"><span className="eyebrow eyebrow-light">IM PERSONNEL CONSULTORIA</span><h2>Uma boa parceria começa com uma conversa.</h2><p>Descreva sua necessidade. Vamos entender o que faz sentido para o seu contexto.</p><div className="contact-aside-rule" /><div className="contact-detail"><span className="contact-detail-icon"><MapPin size={18} /></span><div><strong>Presença em Recife</strong><small>Recife · Pernambuco</small></div></div><a className="contact-detail contact-linkedin" href="https://br.linkedin.com/company/impersonnel-consultoria" target="_blank" rel="noreferrer"><span className="contact-detail-icon"><Linkedin size={18} /></span><div><strong>LinkedIn oficial</strong><small>Acompanhe a IM Personnel <ArrowUpRight size={13} /></small></div></a><div className="contact-response-note"><MessageCircle size={16} /><span>Use este formulário para compartilhar sua necessidade ou fale com a IM Personnel pelo LinkedIn oficial.</span></div></aside>
+      <aside className="contact-aside"><span className="eyebrow eyebrow-light">IM PERSONNEL CONSULTORIA</span><h2>Uma boa parceria começa com uma conversa.</h2><p>Descreva sua necessidade. Vamos entender o que faz sentido para o seu contexto.</p><div className="contact-aside-rule" />
+        <a className="contact-detail contact-detail-link" href={companyContact.mapsHref} target="_blank" rel="noreferrer"><span className="contact-detail-icon"><MapPin size={18} /></span><div><strong>Nosso endereço</strong><small className="contact-detail-address">{companyContact.addressLine}, Recife, Pernambuco, Brasil <ArrowUpRight size={13} /></small></div></a>
+        <a className="contact-detail contact-detail-link" href={`tel:${companyContact.phoneHref}`}><span className="contact-detail-icon"><Phone size={18} /></span><div><strong>Telefone</strong><small>{companyContact.phoneDisplay}</small></div></a>
+        <a className="contact-detail contact-detail-link" href={companyContact.whatsappHref} target="_blank" rel="noreferrer"><span className="contact-detail-icon"><MessageCircle size={18} /></span><div><strong>WhatsApp</strong><small>Fale diretamente com a equipe</small></div></a>
+        <a className="contact-detail contact-detail-link" href={`mailto:${companyContact.email}`}><span className="contact-detail-icon"><Mail size={18} /></span><div><strong>E-mail</strong><small>{companyContact.email}</small></div></a>
+        <a className="contact-detail contact-detail-link contact-linkedin" href="https://br.linkedin.com/company/impersonnel-consultoria" target="_blank" rel="noreferrer"><span className="contact-detail-icon"><Linkedin size={18} /></span><div><strong>LinkedIn oficial</strong><small>Acompanhe a IM Personnel <ArrowUpRight size={13} /></small></div></a>
+        <div className="contact-response-note"><MessageCircle size={16} /><span>Escolha seu canal preferido: telefone, WhatsApp, e-mail ou formulário.</span></div></aside>
     </div></section>
   </main>;
 }

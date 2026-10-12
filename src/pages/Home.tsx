@@ -3,6 +3,7 @@ import { ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, Check, Compass, MoveUpR
 import { Link } from 'react-router-dom';
 import { services, methodology, insights, heroSlides, type HeroSlide, type Insight } from '../data';
 import { apiGet, type Job } from '../lib/api';
+import { companyContact } from '../lib/contact';
 import { usePageMeta } from '../hooks/usePageMeta';
 import { SectionHeading } from '../components/SectionHeading';
 import { ServiceCard } from '../components/ServiceCard';
@@ -26,6 +27,9 @@ export function Home() {
     script.textContent = JSON.stringify({
       '@context': 'https://schema.org', '@type': 'Organization', name: 'IM Personnel Consultoria', url: import.meta.env.VITE_SITE_URL || 'https://impersonnel.com.br',
       logo: `${import.meta.env.VITE_SITE_URL || 'https://impersonnel.com.br'}/favicon.svg`, description: 'Consultoria de recrutamento e seleção e soluções estratégicas em Recursos Humanos.',
+      telephone: companyContact.phoneHref, email: companyContact.email,
+      address: { '@type': 'PostalAddress', streetAddress: companyContact.addressLine, addressLocality: companyContact.city, addressRegion: companyContact.regionCode, addressCountry: companyContact.countryCode },
+      contactPoint: { '@type': 'ContactPoint', telephone: companyContact.phoneHref, email: companyContact.email, contactType: 'customer service', availableLanguage: 'Portuguese' },
       sameAs: ['https://br.linkedin.com/company/impersonnel-consultoria'], areaServed: { '@type': 'Place', name: 'Recife, Pernambuco, Brasil' },
     });
     document.head.appendChild(script);

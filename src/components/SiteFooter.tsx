@@ -1,9 +1,8 @@
-import { ArrowRight, ArrowUpRight, Linkedin } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, Linkedin, Mail, MapPin, Phone } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { services } from '../data';
 import { Logo } from './Logo';
-
-const whatsapp = import.meta.env.VITE_WHATSAPP_NUMBER?.replace(/\D/g, '');
+import { companyContact } from '../lib/contact';
 
 export function SiteFooter() {
   return (
@@ -29,10 +28,13 @@ export function SiteFooter() {
         <div className="footer-contact-col">
           <h3>Vamos conversar?</h3>
           <p>Conte sobre o desafio da sua empresa. Nossa equipe poderá dar o próximo passo com você.</p>
+          <a className="footer-contact-detail" href={`tel:${companyContact.phoneHref}`}><Phone size={14} /><span>{companyContact.phoneDisplay}</span></a>
+          <a className="footer-contact-detail" href={`mailto:${companyContact.email}`}><Mail size={14} /><span>{companyContact.email}</span></a>
+          <a className="footer-contact-detail footer-contact-address" href={companyContact.mapsHref} target="_blank" rel="noreferrer"><MapPin size={14} /><span>{companyContact.addressLine}<br />Recife · Pernambuco, Brasil</span></a>
           <Link className="footer-contact-link" to="/contato">Fale com a IM Personnel <ArrowRight size={16} /></Link>
           <div className="footer-socials">
             <a href="https://br.linkedin.com/company/impersonnel-consultoria" target="_blank" rel="noreferrer" aria-label="IM Personnel no LinkedIn"><Linkedin size={17} /></a>
-            {whatsapp && <a href={`https://wa.me/${whatsapp}`} target="_blank" rel="noreferrer" aria-label="Fale com a IM Personnel pelo WhatsApp"><span className="wa-mark">w</span></a>}
+            <a href={companyContact.whatsappHref} target="_blank" rel="noreferrer" aria-label="Fale com a IM Personnel pelo WhatsApp"><span className="wa-mark">w</span></a>
           </div>
         </div>
       </div>
