@@ -1,0 +1,58 @@
+[
+  {
+    "key": "application_candidate",
+    "label": "Confirmação de candidatura",
+    "audience": "Quem se candidatou",
+    "variables": ["nome", "vaga", "protocolo"],
+    "subject": "Recebemos sua candidatura • IM Personnel",
+    "body": "Olá, {{nome}}.\n\nSua candidatura para {{vaga}} foi recebida pelo portal da IM Personnel. Protocolo: {{protocolo}}.\n\nEsta mensagem confirma o recebimento e não representa uma decisão sobre o processo seletivo."
+  },
+  {
+    "key": "application_team",
+    "label": "Aviso de nova candidatura",
+    "audience": "Equipe (LEADS_NOTIFICATION_EMAIL)",
+    "variables": ["nome", "email", "telefone", "vaga", "protocolo"],
+    "subject": "Nova candidatura • {{vaga}} • {{protocolo}}",
+    "body": "Uma candidatura foi registrada no portal da IM Personnel.\n\nVaga: {{vaga}}\nCandidato: {{nome}}\nE-mail: {{email}}\nTelefone: {{telefone}}\nProtocolo: {{protocolo}}\n\nAcesse o painel administrativo para consultar os dados e o currículo."
+  },
+  {
+    "key": "talent_candidate",
+    "label": "Confirmação do banco de talentos",
+    "audience": "Quem cadastrou o currículo",
+    "variables": ["nome", "area", "protocolo"],
+    "subject": "Seu perfil foi recebido • IM Personnel",
+    "body": "Olá, {{nome}}.\n\nSeu perfil foi incluído no banco de talentos da IM Personnel com sua autorização. Protocolo: {{protocolo}}.\n\nVocê pode pedir a atualização ou remoção dos dados pelo canal de privacidade."
+  },
+  {
+    "key": "talent_team",
+    "label": "Aviso de novo currículo",
+    "audience": "Equipe (LEADS_NOTIFICATION_EMAIL)",
+    "variables": ["nome", "email", "area", "cidade", "estado", "protocolo"],
+    "subject": "Novo perfil no banco de talentos • {{nome}} • {{protocolo}}",
+    "body": "Um currículo foi cadastrado no banco de talentos da IM Personnel.\n\nNome: {{nome}}\nÁrea de interesse: {{area}}\nLocalidade: {{cidade}}, {{estado}}\nProtocolo: {{protocolo}}\n\nAcesse o painel administrativo para consultar os dados e baixar o currículo."
+  },
+  {
+    "key": "lead_customer",
+    "label": "Confirmação de contato comercial",
+    "audience": "Quem enviou o formulário",
+    "variables": ["nome", "empresa", "servico", "protocolo"],
+    "subject": "Recebemos sua solicitação • {{protocolo}}",
+    "body": "Olá, {{nome}}.\n\nSua solicitação sobre {{servico}} foi registrada pela IM Personnel. Protocolo: {{protocolo}}.\n\nA equipe poderá retornar pelos dados informados."
+  },
+  {
+    "key": "lead_team",
+    "label": "Aviso de nova solicitação empresarial",
+    "audience": "Equipe (LEADS_NOTIFICATION_EMAIL)",
+    "variables": ["nome", "empresa", "servico", "protocolo"],
+    "subject": "Nova solicitação empresarial • {{empresa}} • {{protocolo}}",
+    "body": "Nova solicitação recebida pelo site da IM Personnel.\n\nEmpresa: {{empresa}}\nContato: {{nome}}\nServiço: {{servico}}\nProtocolo: {{protocolo}}\n\nAcesse o painel administrativo para acompanhar este lead."
+  },
+  {
+    "key": "privacy_customer",
+    "label": "Confirmação de pedido de privacidade",
+    "audience": "Titular dos dados",
+    "variables": ["nome", "tipo", "protocolo"],
+    "subject": "Solicitação de privacidade recebida • {{protocolo}}",
+    "body": "Olá, {{nome}}.\n\nRecebemos sua solicitação relativa a dados pessoais. Protocolo: {{protocolo}}.\n\nA equipe responsável poderá entrar em contato para dar andamento ao pedido."
+  }
+]

@@ -50,6 +50,8 @@ export async function initializeDatabase() {
       intro TEXT NOT NULL,
       body TEXT NOT NULL DEFAULT '[]',
       minutes INTEGER NOT NULL DEFAULT 4,
+      image_key TEXT NOT NULL DEFAULT '',
+      image_alt TEXT NOT NULL DEFAULT '',
       published INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -131,10 +133,65 @@ export async function initializeDatabase() {
     CREATE TABLE IF NOT EXISTS admin_users (
       id TEXT PRIMARY KEY,
       email TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL DEFAULT '',
       salt TEXT NOT NULL,
       password_hash TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT '',
+      last_login_at TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE TABLE IF NOT EXISTS hero_slides (
+      id TEXT PRIMARY KEY,
+      slug TEXT NOT NULL UNIQUE,
+      eyebrow TEXT NOT NULL DEFAULT '',
+      location TEXT NOT NULL DEFAULT '',
+      side_label TEXT NOT NULL DEFAULT '',
+      navigation_label TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL DEFAULT '[]',
+      body_text TEXT NOT NULL DEFAULT '',
+      primary_label TEXT NOT NULL DEFAULT '',
+      primary_to TEXT NOT NULL DEFAULT '',
+      secondary_label TEXT NOT NULL DEFAULT '',
+      secondary_to TEXT NOT NULL DEFAULT '',
+      footnote TEXT NOT NULL DEFAULT '',
+      image_position TEXT NOT NULL DEFAULT 'center 52%',
+      image_alt TEXT NOT NULL DEFAULT '',
+      image_key TEXT NOT NULL DEFAULT '',
+      position INTEGER NOT NULL DEFAULT 0,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS hero_slides_public_idx ON hero_slides(active, position);
+
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE TABLE IF NOT EXISTS email_templates (
+      key TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      audience TEXT NOT NULL DEFAULT '',
+      subject TEXT NOT NULL DEFAULT '',
+      body TEXT NOT NULL DEFAULT '',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE TABLE IF NOT EXISTS email_events (
+      id TEXT PRIMARY KEY,
+      template_key TEXT NOT NULL DEFAULT '',
+      kind TEXT NOT NULL DEFAULT 'notification',
+      recipient TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL,
+      detail TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS email_events_created_idx ON email_events(created_at);
 
     CREATE TABLE IF NOT EXISTS audit_log (
       id TEXT PRIMARY KEY,
@@ -151,6 +208,16 @@ export async function initializeDatabase() {
     ['jobs', 'hiring_organization', "TEXT NOT NULL DEFAULT ''"],
     ['privacy_requests', 'updated_at', "TEXT NOT NULL DEFAULT ''"],
     ['privacy_requests', 'internal_notes', "TEXT NOT NULL DEFAULT ''"],
+    ['articles', 'image_key', "TEXT NOT NULL DEFAULT ''"],
+    ['articles', 'image_alt', "TEXT NOT NULL DEFAULT ''"],
+    ['admin_users', 'name', "TEXT NOT NULL DEFAULT ''"],
+    ['admin_users', 'active', 'INTEGER NOT NULL DEFAULT 1'],
+    ['admin_users', 'updated_at', "TEXT NOT NULL DEFAULT ''"],
+    ['admin_users', 'last_login_at', "TEXT NOT NULL DEFAULT ''"],
+    ['admin_users', 'totp_secret', "TEXT NOT NULL DEFAULT ''"],
+    ['admin_users', 'totp_enabled', 'INTEGER NOT NULL DEFAULT 0'],
+    ['admin_users', 'totp_confirmed_at', "TEXT NOT NULL DEFAULT ''"],
+    ['admin_users', 'recovery_codes', "TEXT NOT NULL DEFAULT '[]'"],
   ]) {
     const statement = db.prepare(`PRAGMA table_info(${table})`);
     let present = false;

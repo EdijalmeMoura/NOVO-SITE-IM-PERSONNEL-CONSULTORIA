@@ -29,7 +29,8 @@ export type Job = {
   updated_at: string;
 };
 
-export type AdminSession = { authenticated: boolean; csrf?: string; user?: { email: string } };
+export type AdminSession = { authenticated: boolean; csrf?: string; user?: { email: string; name?: string }; totp_required?: boolean; challenge?: string; expires_in?: number; recovery_codes_left?: number };
+export type AdminUser = { id: string; email: string; name: string; active: boolean; totp_enabled?: boolean; created_at: string; updated_at: string; last_login_at: string };
 let csrfToken = '';
 export const setCsrfToken = (value: string) => { csrfToken = value; };
 
@@ -40,8 +41,8 @@ async function handleResponse<T>(response: Response): Promise<T> {
   return payload as T;
 }
 
-export async function apiGet<T>(path: string): Promise<T> {
-  return handleResponse<T>(await fetch(path, { credentials: 'same-origin', headers: { Accept: 'application/json' } }));
+export async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {
+  return handleResponse<T>(await fetch(path, { credentials: 'same-origin', ...init, headers: { Accept: 'application/json', ...(init?.headers || {}) } }));
 }
 export async function apiPost<T>(path: string, body: unknown): Promise<T> {
   return handleResponse<T>(await fetch(path, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}) }, body: JSON.stringify(body) }));
@@ -51,6 +52,10 @@ export async function apiPut<T>(path: string, body: unknown): Promise<T> {
 }
 export async function apiForm<T>(path: string, body: FormData): Promise<T> {
   return handleResponse<T>(await fetch(path, { method: 'POST', credentials: 'same-origin', headers: { Accept: 'application/json' }, body }));
+}
+// Envio multipart autenticado (upload de imagem no painel). O Content-Type é definido pelo navegador com o boundary.
+export async function apiAdminForm<T>(path: string, body: FormData, method: 'POST' | 'PUT' = 'POST'): Promise<T> {
+  return handleResponse<T>(await fetch(path, { method, credentials: 'same-origin', headers: { Accept: 'application/json', 'X-CSRF-Token': csrfToken }, body }));
 }
 export async function apiDelete<T>(path: string): Promise<T> {
   return handleResponse<T>(await fetch(path, { method: 'DELETE', credentials: 'same-origin', headers: { Accept: 'application/json', 'X-CSRF-Token': csrfToken } }));

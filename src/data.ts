@@ -1,4 +1,5 @@
 import insightDefaults from '../content/insights.json';
+import heroSlideDefaults from '../content/hero-slides.json';
 
 export type ServiceItem = {
   slug: string;
@@ -143,5 +144,30 @@ export const methodology = [
   { number: '04', title: 'Acompanhamos a jornada', text: 'Apresentamos os perfis e apoiamos os alinhamentos ao longo do processo.' },
 ];
 
-export type Insight = { slug: string; category: string; title: string; intro: string; minutes: number; body: string[]; created_at?: string; updated_at?: string; published?: boolean; id?: string };
+export type Insight = { slug: string; category: string; title: string; intro: string; minutes: number; body: string[]; image_url?: string; image_alt?: string; image_key?: string; created_at?: string; updated_at?: string; published?: boolean; id?: string };
 export const insights: Insight[] = insightDefaults as Insight[];
+
+export type HeroTitleLine = { text: string; accent?: boolean };
+export type HeroSlide = {
+  id?: string;
+  slug: string;
+  eyebrow: string;
+  location: string;
+  sideLabel: string;
+  navigationLabel: string;
+  title: HeroTitleLine[];
+  text: string;
+  primary: { to: string; label: string };
+  secondary: { to: string; label: string };
+  footnote: string;
+  imagePosition: string;
+  imageAlt: string;
+  imageUrl?: string;
+  imageKey?: string;
+  position?: number;
+  active?: boolean;
+  created_at?: string;
+  updated_at?: string;
+};
+// Conteúdo revisado que serve de partida e de fallback enquanto a API não responde.
+export const heroSlides: HeroSlide[] = (heroSlideDefaults as unknown as HeroSlide[]).map((slide, index) => ({ ...slide, id: slide.id || slide.slug, position: index, active: true }));

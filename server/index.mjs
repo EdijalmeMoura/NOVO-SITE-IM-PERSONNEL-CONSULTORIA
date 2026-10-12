@@ -11,13 +11,19 @@ import { createServer as createViteServer } from 'vite';
 import { all, databaseFilePath, get, initializeDatabase, persistDatabase, run } from './db.mjs';
 import { hashPassword, verifyPassword } from './auth.mjs';
 import { ensureBootstrapAdmin } from './bootstrap.mjs';
-import { isEmailConfigured, sendMessage } from './mailer.mjs';
+import { emailSettings, isEmailConfigured, readTemplate, renderTemplate, resetMailer, sendMessage, sendTemplate, verifyTransport } from './mailer.mjs';
+import { buildZip, folderEntries } from './backup.mjs';
+import { encryptionAvailable, isProtectedSecret, protectSecret, revealSecret } from './secrets.mjs';
+import { generateRecoveryCodes, generateTotpSecret, otpauthUri, recoveryCodeHash, verifyTotp } from './totp.mjs';
 import insightDefaults from '../content/insights.json' with { type: 'json' };
+import heroSlideDefaults from '../content/hero-slides.json' with { type: 'json' };
+import emailTemplateDefaults from '../content/email-templates.json' with { type: 'json' };
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const configuredDataDir = (process.env.DATA_DIR || '').trim();
 const storagePath = path.resolve(configuredDataDir || path.join(root, 'storage'));
 const resumesPath = path.join(storagePath, 'private-resumes');
+const contentImagesPath = path.join(storagePath, 'content-images');
 const NOTICE_VERSION = '2026-10-v1';
 const app = express();
 const sessions = new Map();
@@ -46,6 +52,17 @@ function readRetentionPolicy(required) {
   return policy;
 }
 const asText = (value, max = 4000) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
+// Listas administrativas são paginadas no servidor e sempre devolvem o total: sem isso a
+// tela não sabe que existem mais registros do que os que couberam na resposta.
+function paginationParams(req, defaultLimit = 100, maxLimit = 500) {
+  const requested = Number.parseInt(req.query.limit, 10);
+  const limit = Math.min(maxLimit, Math.max(1, Number.isFinite(requested) ? requested : defaultLimit));
+  const requestedOffset = Number.parseInt(req.query.offset, 10);
+  const offset = Math.max(0, Number.isFinite(requestedOffset) ? requestedOffset : 0);
+  return { limit, offset };
+}
+// Em envios multipart os booleanos chegam como texto ('true'/'on'/'false'), por isso a conversão explícita.
+const asBoolean = (value) => value === true || ['true', 'on', '1', 'yes'].includes(String(value ?? '').trim().toLowerCase());
 const asEmail = (value) => asText(value, 254).toLowerCase();
 const validEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 const strongAdminPassword = (value) => typeof value === 'string' && value.length >= 14 && /[a-z]/.test(value) && /[A-Z]/.test(value) && /\d/.test(value);
@@ -63,6 +80,18 @@ const safeJsonArray = (value) => {
 };
 const slugify = (value) => asText(value, 90).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
 const reference = (id) => `IM-${id.replaceAll('-', '').slice(0, 8).toUpperCase()}`;
+// Instalações anteriores gravavam a senha do SMTP em texto puro. Com APP_SECRET
+// disponível, ela é reescrita protegida na primeira inicialização.
+function encryptStoredSecrets() {
+  try {
+    const stored = String(get("SELECT value FROM settings WHERE key = 'SMTP_PASS'")?.value ?? '');
+    if (!stored || isProtectedSecret(stored) || !encryptionAvailable()) return;
+    setSetting('SMTP_PASS', protectSecret(stored));
+    persistDatabase();
+    console.log('Senha do SMTP que estava em texto puro passou a ser protegida com APP_SECRET.');
+  } catch (error) { console.warn('Não foi possível proteger a senha do SMTP guardada.', error?.message || error); }
+}
+
 function purgeExpiredData() {
   const retentionTargets = [
     ['applications', 'APPLICATION_RETENTION_DAYS', true],
@@ -88,6 +117,7 @@ function purgeExpiredData() {
 
 await fs.promises.mkdir(resumesPath, { recursive: true, mode: 0o700 });
 await fs.promises.chmod(resumesPath, 0o700);
+await fs.promises.mkdir(contentImagesPath, { recursive: true, mode: 0o755 });
 await initializeDatabase();
 if (Number(get('SELECT COUNT(*) AS count FROM articles')?.count || 0) === 0) {
   const created = nowIso();
@@ -97,10 +127,27 @@ if (Number(get('SELECT COUNT(*) AS count FROM articles')?.count || 0) === 0) {
   }
   persistDatabase();
 }
+if (Number(get('SELECT COUNT(*) AS count FROM hero_slides')?.count || 0) === 0) {
+  const created = nowIso();
+  heroSlideDefaults.forEach((slide, index) => {
+    run(`INSERT INTO hero_slides (id, slug, eyebrow, location, side_label, navigation_label, title, body_text, primary_label, primary_to, secondary_label, secondary_to, footnote, image_position, image_alt, image_key, position, active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, 1, ?, ?)`,
+      [uuid(), slide.slug, slide.eyebrow, slide.location, slide.sideLabel, slide.navigationLabel, JSON.stringify(slide.title), slide.text, slide.primary.label, slide.primary.to, slide.secondary.label, slide.secondary.to, slide.footnote, slide.imagePosition, slide.imageAlt, index, created, created]);
+  });
+  persistDatabase();
+}
+if (Number(get('SELECT COUNT(*) AS count FROM email_templates')?.count || 0) === 0) {
+  const created = nowIso();
+  for (const template of emailTemplateDefaults) {
+    run('INSERT INTO email_templates (key, label, audience, subject, body, enabled, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?)', [template.key, template.label, template.audience, template.subject, template.body, created]);
+  }
+  persistDatabase();
+}
 // Falha na inicialização (variáveis inconsistentes) é intencional: o erro aparece nos logs do deploy.
 const bootstrapResult = ensureBootstrapAdmin();
 if (bootstrapResult === 'created') console.log('Administrador inicial criado a partir de ADMIN_BOOTSTRAP_EMAIL.');
 if (bootstrapResult === 'updated') console.log('Senha do administrador inicial atualizada a partir de ADMIN_BOOTSTRAP_PASSWORD_HASH.');
+encryptStoredSecrets();
 purgeExpiredData();
 const retentionTimer = setInterval(() => {
   try { purgeExpiredData(); }
@@ -132,12 +179,20 @@ app.use(helmet({
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false, limit: '64kb' }));
 
-const createFormLimiter = () => rateLimit({ windowMs: 15 * 60 * 1000, limit: 6, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Muitas tentativas em pouco tempo. Aguarde alguns minutos e tente novamente.' } });
+// Os limites valem por IP a cada 15 minutos. FORM_RATE_LIMIT e LOGIN_RATE_LIMIT existem
+// para a operação ajustar o rigor e para as suítes automatizadas não esbarrarem entre si.
+function rateLimitFromEnv(name, fallback, max = 10_000) {
+  const value = Number.parseInt(process.env[name] || '', 10);
+  return Number.isFinite(value) && value > 0 && value <= max ? value : fallback;
+}
+const formLimit = rateLimitFromEnv('FORM_RATE_LIMIT', 6);
+const loginLimit = rateLimitFromEnv('LOGIN_RATE_LIMIT', 8);
+const createFormLimiter = () => rateLimit({ windowMs: 15 * 60 * 1000, limit: formLimit, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Muitas tentativas em pouco tempo. Aguarde alguns minutos e tente novamente.' } });
 const applicationLimiter = createFormLimiter();
 const talentLimiter = createFormLimiter();
 const leadLimiter = createFormLimiter();
 const privacyLimiter = createFormLimiter();
-const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 8, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Muitas tentativas de acesso. Aguarde alguns minutos e tente novamente.' } });
+const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: loginLimit, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Muitas tentativas de acesso. Aguarde alguns minutos e tente novamente.' } });
 const initialAdminLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 4, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Muitas tentativas de configuração em pouco tempo. Aguarde alguns minutos e tente novamente.' } });
 const upload = multer({
   storage: multer.diskStorage({
@@ -166,6 +221,58 @@ function uploadLooksValid(file) {
 function discardUpload(file) {
   if (file?.path) fs.rmSync(file.path, { force: true });
 }
+
+// Imagens de conteúdo são públicas: ficam em storage/content-images e são servidas em /media/content-images.
+const IMAGE_LIMIT_BYTES = 5 * 1024 * 1024;
+const IMAGE_TYPES = new Map([
+  ['image/jpeg', { ext: '.jpg', magic: [[0xff, 0xd8, 0xff]] }],
+  ['image/png', { ext: '.png', magic: [[0x89, 0x50, 0x4e, 0x47]] }],
+  ['image/webp', { ext: '.webp', magic: [[0x52, 0x49, 0x46, 0x46]] }],
+  ['image/avif', { ext: '.avif', magic: [[0x66, 0x74, 0x79, 0x70]] }],
+]);
+const contentImageUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, contentImagesPath),
+    filename: (_req, file, cb) => {
+      const spec = IMAGE_TYPES.get(file.mimetype);
+      cb(null, `${uuid()}${spec ? spec.ext : path.extname(file.originalname).toLowerCase()}`);
+    },
+  }),
+  limits: { fileSize: IMAGE_LIMIT_BYTES, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    cb(IMAGE_TYPES.has(file.mimetype) ? null : new Error('Envie a imagem em JPG, PNG, WebP ou AVIF.'), IMAGE_TYPES.has(file.mimetype));
+  },
+});
+function imageLooksValid(file) {
+  if (!file) return false;
+  const spec = IMAGE_TYPES.get(file.mimetype);
+  if (!spec) return false;
+  try {
+    fs.chmodSync(file.path, 0o644);
+    const head = fs.readFileSync(file.path).subarray(0, 16);
+    if (!spec.magic.some((signature) => signature.every((byte, index) => head[index] === byte))) return false;
+    // WebP e AVIF compartilham o container RIFF/ISOBMFF: confira o tipo declarado dentro do arquivo.
+    if (file.mimetype === 'image/webp') return head.subarray(8, 12).toString() === 'WEBP';
+    if (file.mimetype === 'image/avif') return ['avif', 'avis', 'mif1'].includes(head.subarray(4, 8).toString());
+    return true;
+  } catch { return false; }
+}
+function contentImageKey(value) {
+  const key = asText(value, 80);
+  return /^[a-f0-9-]{36}\.(jpg|png|webp|avif)$/.test(key) ? key : '';
+}
+function discardContentImage(key) {
+  const safe = contentImageKey(key);
+  if (safe) fs.rmSync(path.join(contentImagesPath, safe), { force: true });
+}
+function imagePublicUrl(key) {
+  return key ? `/media/content-images/${key}` : '';
+}
+const INVALID_IMAGE_MESSAGE = 'O arquivo enviado não parece ser uma imagem válida. Use JPG, PNG, WebP ou AVIF de até 5 MB.';
+// Valores usados no botão "ver prévia" dos modelos de e-mail.
+const SAMPLE_VARIABLES = { nome: 'Maria Silva', email: 'maria@exemplo.com.br', telefone: '(81) 99999-0000', vaga: 'Analista de Recursos Humanos', empresa: 'Indústria Exemplo', servico: 'Recrutamento e Seleção', area: 'Recursos Humanos', cidade: 'Recife', estado: 'PE', tipo: 'Acesso aos dados', protocolo: 'IM-EXEMPLO1' };
+const sampleVariable = (name) => SAMPLE_VARIABLES[name] || `{{${name}}}`;
+const PLACEHOLDER_PATTERN = /\{\{\s*([\w.]+)\s*\}\}/g;
 function parseCookie(req, name) {
   const cookies = (req.headers.cookie || '').split(';');
   const entry = cookies.map((value) => value.trim()).find((value) => value.startsWith(`${name}=`));
@@ -178,7 +285,13 @@ function getSession(req) {
     if (key) sessions.delete(key);
     return null;
   }
-  return { key, ...session };
+  // Uma conta desativada perde o acesso imediatamente, mesmo com sessão aberta.
+  const account = get('SELECT name, active FROM admin_users WHERE id = ?', [session.userId]);
+  if (!account || !Number(account.active)) {
+    sessions.delete(key);
+    return null;
+  }
+  return { key, ...session, name: account.name || session.name || '' };
 }
 function requireAdmin(req, res, next) {
   const session = getSession(req);
@@ -197,6 +310,142 @@ function audit(req, action, entityType, entityId, details = {}) {
 function activeDateFilter() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 }
+
+// --- Prévia de links compartilhados (SEO e redes sociais) ----------------------
+// O HTML é montado no servidor porque robôs de WhatsApp, LinkedIn e Facebook não
+// executam JavaScript: sem isso toda vaga compartilhada vira o cartão da home.
+const SEO_BLOCK = /<!--seo:start-->[\s\S]*?<!--seo:end-->/;
+const escapeHtmlAttribute = (value) => String(value ?? '')
+  .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+  .replaceAll('"', '&quot;').replaceAll("'", '&#39;')
+  .replace(/\s+/g, ' ').trim();
+const siteOrigin = () => (process.env.SITE_URL || 'https://impersonnel.com.br').replace(/\/$/, '');
+const defaultShareImage = () => `${siteOrigin()}/images/hero-team.jpg`;
+
+function seoBlockFor(pathname) {
+  const origin = siteOrigin();
+  const title = 'IM Personnel | Pessoas certas transformam negócios';
+  const description = 'Recrutamento, seleção e soluções estratégicas em Recursos Humanos, com sede em Recife, Pernambuco.';
+  const canonical = `${origin}${pathname === '/' ? '/' : pathname.replace(/\/$/, '')}`;
+  let heading = title;
+  let summary = description;
+  let image = defaultShareImage();
+  let imageAlt = 'Equipe da IM Personnel em ambiente de trabalho';
+  let type = 'website';
+  let robots = 'index, follow';
+
+  const job = /^\/vagas\/([^/]+)$/.exec(pathname);
+  const article = /^\/conteudos\/([^/]+)$/.exec(pathname);
+  if (job) {
+    type = 'article';
+    const row = get('SELECT title, city, state, modality, employment_type, summary FROM jobs WHERE slug = ? AND published = 1 AND (expires_at IS NULL OR expires_at >= ?)', [asText(job[1], 110), activeDateFilter()]);
+    if (row) {
+      heading = `${row.title} em ${row.city}, ${row.state} | IM Personnel`;
+      summary = [row.summary, `${row.modality} · ${row.employment_type}`].filter(Boolean).join(' ');
+    } else {
+      robots = 'noindex, follow';
+    }
+  } else if (article) {
+    type = 'article';
+    const row = get('SELECT title, intro, category, image_key FROM articles WHERE slug = ? AND published = 1', [asText(article[1], 120)]);
+    if (row) {
+      heading = `${row.title} | IM Personnel`;
+      summary = row.intro;
+      if (row.image_key) { image = `${origin}/media/content-images/${encodeURIComponent(row.image_key)}`; imageAlt = row.title; }
+    } else {
+      robots = 'noindex, follow';
+    }
+  } else if (pathname === '/vagas') {
+    heading = 'Vagas abertas | IM Personnel';
+    const total = Number(get('SELECT COUNT(*) AS count FROM jobs WHERE published = 1 AND (expires_at IS NULL OR expires_at >= ?)', [activeDateFilter()])?.count || 0);
+    summary = total === 1
+      ? 'Uma oportunidade aberta agora. Recrutamento conduzido pela IM Personnel em Recife e região.'
+      : `${total} oportunidades abertas agora. Recrutamento conduzido pela IM Personnel em Recife e região.`;
+  } else if (pathname === '/conteudos') {
+    heading = 'Conteúdos | IM Personnel';
+    summary = 'Artigos sobre recrutamento, seleção, liderança e gestão de pessoas escritos pela equipe da IM Personnel.';
+  } else if (pathname === '/404' || pathname.startsWith('/admin') || pathname.startsWith('/configuracao-inicial')) {
+    robots = 'noindex, nofollow';
+  }
+
+  // O endereço com barra final e sem barra descrevem a mesma página: um só canônico.
+  return [
+    `<meta name="description" content="${escapeHtmlAttribute(summary)}" />`,
+    `<meta property="og:type" content="${type}" />`,
+    '<meta property="og:locale" content="pt_BR" />',
+    '<meta property="og:site_name" content="IM Personnel" />',
+    `<meta property="og:title" content="${escapeHtmlAttribute(heading)}" />`,
+    `<meta property="og:description" content="${escapeHtmlAttribute(summary)}" />`,
+    `<meta property="og:url" content="${escapeHtmlAttribute(canonical)}" />`,
+    `<meta property="og:image" content="${escapeHtmlAttribute(image)}" />`,
+    `<meta property="og:image:alt" content="${escapeHtmlAttribute(imageAlt)}" />`,
+    '<meta name="twitter:card" content="summary_large_image" />',
+    `<meta name="robots" content="${robots}" />`,
+    `<link rel="canonical" href="${escapeHtmlAttribute(canonical)}" />`,
+    `<title>${escapeHtmlAttribute(heading)}</title>`,
+  ].join('\n    ');
+}
+function injectSeo(html, pathname) {
+  return html.replace(SEO_BLOCK, `<!--seo:start-->\n    ${seoBlockFor(pathname)}\n    <!--seo:end-->`);
+}
+// O HTML de produção é lido uma vez e revalidado pela data de modificação do arquivo.
+let appShellCache = { html: '', mtimeMs: 0 };
+function appShellHtml() {
+  const shellPath = path.join(root, 'dist', 'index.html');
+  const { mtimeMs } = fs.statSync(shellPath);
+  if (appShellCache.mtimeMs !== mtimeMs) appShellCache = { html: fs.readFileSync(shellPath, 'utf-8'), mtimeMs };
+  return appShellCache.html;
+}
+
+// --- Saúde do envio de e-mail -------------------------------------------------
+// Toda tentativa de envio é registrada: sem isso uma senha de SMTP expirada faria o
+// candidato ficar sem confirmação e a equipe sem o aviso, sem ninguém perceber.
+const EMAIL_EVENT_LIMIT = 200;
+function maskEmailError(message) {
+  let text = String(message ?? '').replace(/\s+/g, ' ').trim();
+  const { pass } = emailSettings();
+  if (pass) text = text.split(pass).join('***');
+  return text.slice(0, 300);
+}
+function recordEmailEvent({ templateKey = '', kind = 'notification', recipient = '', status, detail = '' }) {
+  try {
+    run('INSERT INTO email_events (id, template_key, kind, recipient, status, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [uuid(), templateKey, kind, recipient, status, detail, nowIso()]);
+    run('DELETE FROM email_events WHERE id NOT IN (SELECT id FROM email_events ORDER BY created_at DESC LIMIT ?)', [EMAIL_EVENT_LIMIT]);
+    persistDatabase();
+  } catch { console.error('Não foi possível registrar o resultado de um envio de e-mail.'); }
+}
+// Envia um modelo e guarda o resultado. Nunca lança: o formulário responde mesmo se o e-mail falhar.
+async function notify({ key, to, variables = {}, replyTo, kind = 'notification' }) {
+  if (!to) { recordEmailEvent({ templateKey: key, kind, status: 'skipped', detail: 'sem destinatário' }); return false; }
+  const template = readTemplate(key);
+  if (template && !template.enabled) { recordEmailEvent({ templateKey: key, kind, recipient: to, status: 'skipped', detail: 'modelo desativado no painel' }); return false; }
+  try {
+    const sent = await sendTemplate({ key, to, variables, replyTo });
+    recordEmailEvent({ templateKey: key, kind, recipient: to, status: sent ? 'sent' : 'skipped', detail: sent ? '' : 'modelo indisponível' });
+    return sent;
+  } catch (error) {
+    recordEmailEvent({ templateKey: key, kind, recipient: to, status: 'failed', detail: maskEmailError(error?.message || error) });
+    console.warn(`Falha ao enviar o e-mail "${key}".`);
+    return false;
+  }
+}
+function emailHealth() {
+  const configured = isEmailConfigured();
+  const lastSuccess = get("SELECT created_at FROM email_events WHERE status = 'sent' ORDER BY created_at DESC LIMIT 1");
+  const lastFailure = get("SELECT created_at, detail, template_key FROM email_events WHERE status = 'failed' ORDER BY created_at DESC LIMIT 1");
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const failures24h = Number(get("SELECT COUNT(*) AS count FROM email_events WHERE status = 'failed' AND created_at >= ?", [since])?.count || 0);
+  return {
+    configured,
+    notification_email: emailSettings().notification,
+    last_success_at: lastSuccess?.created_at || '',
+    last_failure_at: lastFailure?.created_at || '',
+    last_error: lastFailure?.detail || '',
+    last_error_template: lastFailure?.template_key || '',
+    failures_24h: failures24h,
+    attention: configured && Boolean(lastFailure) && (!lastSuccess || lastFailure.created_at > lastSuccess.created_at),
+  };
+}
 function jobToPublic(row) {
   if (!row) return null;
   const { responsibilities, requirements, differentiators, benefits, ...job } = row;
@@ -212,7 +461,93 @@ function jobToPublic(row) {
 }
 function articleToPublic(row) {
   if (!row) return null;
-  return { ...row, published: Boolean(Number(row.published)), body: JSON.parse(row.body || '[]') };
+  const imageKey = contentImageKey(row.image_key);
+  return { ...row, image_key: imageKey, image_url: imagePublicUrl(imageKey), published: Boolean(Number(row.published)), body: JSON.parse(row.body || '[]') };
+}
+function adminUserToPublic(row) {
+  if (!row) return null;
+  return { id: row.id, email: row.email, name: row.name || '', active: Boolean(Number(row.active)), totp_enabled: Boolean(Number(row.totp_enabled ?? 0)), created_at: row.created_at, updated_at: row.updated_at || '', last_login_at: row.last_login_at || '' };
+}
+const DEFAULT_HERO_IMAGE = '/images/hero-team.jpg';
+const templateVariables = new Map(emailTemplateDefaults.map((template) => [template.key, template.variables || []]));
+function slideTitleLines(rawTitle) {
+  try {
+    const parsed = JSON.parse(rawTitle || '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((line) => line && String(line.text || '').trim()).map((line) => ({ text: String(line.text), accent: Boolean(line.accent) }));
+  } catch { return []; }
+}
+function slideToPublic(row) {
+  if (!row) return null;
+  const lines = slideTitleLines(row.title);
+  const imageKey = contentImageKey(row.image_key);
+  return {
+    id: row.id,
+    slug: row.slug,
+    eyebrow: row.eyebrow || '',
+    location: row.location || '',
+    sideLabel: row.side_label || '',
+    navigationLabel: row.navigation_label || row.eyebrow || 'Destaque',
+    title: lines,
+    text: row.body_text || '',
+    primary: { to: row.primary_to || '/', label: row.primary_label || '' },
+    secondary: { to: row.secondary_to || '/', label: row.secondary_label || '' },
+    footnote: row.footnote || '',
+    imagePosition: row.image_position || 'center 52%',
+    imageAlt: row.image_alt || '',
+    imageKey,
+    imageUrl: imageKey ? imagePublicUrl(imageKey) : DEFAULT_HERO_IMAGE,
+    accentLine: lines.findIndex((line) => line.accent) + 1 || '',
+    position: Number(row.position || 0),
+    active: Boolean(Number(row.active)),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+function cleanSlideInput(body = {}, existing = {}) {
+  const existingLines = slideTitleLines(existing.title);
+  const rawLines = Array.isArray(body.title)
+    ? body.title.map((line) => asText(typeof line === 'string' ? line : line?.text, 200)).filter(Boolean)
+    : String(body.title ?? existingLines.map((line) => line.text).join('\n')).split(/\r?\n/).map((line) => asText(line, 200)).filter(Boolean);
+  const accentLine = body.accent_line === undefined ? (existingLines.findIndex((line) => line.accent) + 1) : Number.parseInt(body.accent_line, 10);
+  const title = rawLines.slice(0, 6).map((text, index) => ({ text, accent: Number.isFinite(accentLine) && accentLine === index + 1 }));
+  const existingImage = contentImageKey(existing.image_key);
+  const imageKey = asBoolean(body.remove_image) ? '' : (contentImageKey(body.image_key) || existingImage);
+  const position = Number.parseInt(body.position ?? existing.position ?? 0, 10);
+  return {
+    eyebrow: asText(body.eyebrow ?? existing.eyebrow, 120),
+    location: asText(body.location ?? existing.location, 120),
+    side_label: asText(body.side_label ?? existing.side_label, 120),
+    navigation_label: asText(body.navigation_label ?? existing.navigation_label, 160),
+    title: JSON.stringify(title),
+    body_text: asText(body.text ?? existing.body_text, 600),
+    primary_label: asText(body.primary_label ?? existing.primary_label, 80),
+    primary_to: asText(body.primary_to ?? existing.primary_to, 300),
+    secondary_label: asText(body.secondary_label ?? existing.secondary_label, 80),
+    secondary_to: asText(body.secondary_to ?? existing.secondary_to, 300),
+    footnote: asText(body.footnote ?? existing.footnote, 200),
+    image_position: asText(body.image_position ?? existing.image_position, 40) || 'center 52%',
+    image_alt: imageKey || body.image_alt !== undefined ? asText(body.image_alt ?? existing.image_alt, 300) : (existing.image_alt || ''),
+    image_key: imageKey,
+    position: Number.isFinite(position) ? Math.min(99, Math.max(0, position)) : 0,
+    active: body.active === undefined ? Number(existing.active ?? 1) : (asBoolean(body.active) ? 1 : 0),
+  };
+}
+function validateSlide(slide) {
+  if (!slide.eyebrow) return 'Preencha a etiqueta do destaque (texto pequeno acima do título).';
+  if (!slide.navigation_label) return 'Preencha o nome usado na navegação e em leitores de tela.';
+  if (!JSON.parse(slide.title).length) return 'Informe ao menos uma linha de título.';
+  if (!slide.body_text) return 'Informe o texto de apoio do destaque.';
+  if (!slide.primary_label || !slide.primary_to) return 'Informe o texto e o destino do botão principal.';
+  // Destinos internos evitam redirecionamento para fora do site.
+  for (const target of [slide.primary_to, slide.secondary_to]) {
+    if (target && !/^\/[^\s]*$/.test(target)) return 'Os destinos dos botões devem ser caminhos internos começando com /.';
+  }
+  return null;
+}
+function setSetting(key, value) {
+  if (get('SELECT key FROM settings WHERE key = ?', [key])) run('UPDATE settings SET value = ?, updated_at = ? WHERE key = ?', [value, nowIso(), key]);
+  else run('INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)', [key, value, nowIso()]);
 }
 function cleanJobInput(body, existing = {}) {
   const title = asText(body.title ?? existing.title, 140);
@@ -249,10 +584,26 @@ function cleanArticleInput(body = {}, existing = {}) {
     ? body.body.map((item) => asText(item, 4000)).filter(Boolean).slice(0, 30)
     : String(body.body ?? oldBody.join('\n\n')).split(/\r?\n\s*\r?\n/).map((item) => asText(item, 4000)).filter(Boolean).slice(0, 30);
   const minutesValue = Number.parseInt(body.minutes ?? existing.minutes ?? '4', 10);
-  return { title, intro, category, slug, body: JSON.stringify(paragraphs), minutes: Math.min(30, Math.max(1, Number.isFinite(minutesValue) ? minutesValue : 4)), published: body.published === undefined ? Number(existing.published || 0) : (body.published ? 1 : 0) };
+  const existingImage = contentImageKey(existing.image_key);
+  const removeImage = asBoolean(body.remove_image);
+  const requestedImage = contentImageKey(body.image_key);
+  const imageKey = removeImage ? '' : (requestedImage || existingImage);
+  return { title, intro, category, slug, body: JSON.stringify(paragraphs), minutes: Math.min(30, Math.max(1, Number.isFinite(minutesValue) ? minutesValue : 4)), image_key: imageKey, image_alt: imageKey ? asText(body.image_alt ?? existing.image_alt, 300) : '', published: body.published === undefined ? Number(existing.published || 0) : (asBoolean(body.published) ? 1 : 0) };
 }
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
+
+// Imagens de conteúdo enviadas pelo painel. A chave é validada antes de tocar o disco.
+app.get('/media/content-images/:key', (req, res) => {
+  const key = contentImageKey(req.params.key);
+  const target = key ? path.resolve(contentImagesPath, key) : '';
+  if (!key || !target.startsWith(`${path.resolve(contentImagesPath)}${path.sep}`) || !fs.existsSync(target)) {
+    return res.status(404).json({ error: 'Imagem não encontrada.' });
+  }
+  res.setHeader('Cache-Control', 'public, max-age=604800');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.sendFile(target);
+});
 
 app.get('/api/articles', (req, res) => {
   const limit = Math.min(30, Math.max(1, Number.parseInt(req.query.limit || '12', 10) || 12));
@@ -263,6 +614,12 @@ app.get('/api/articles/:slug', (req, res) => {
   const row = get('SELECT * FROM articles WHERE slug = ? AND published = 1', [asText(req.params.slug, 120)]);
   if (!row) return res.status(404).json({ error: 'Conteúdo não encontrado.' });
   res.json({ article: articleToPublic(row) });
+});
+
+// Destaques da página inicial, editáveis no painel. Somente os ativos são públicos.
+app.get('/api/hero-slides', (_req, res) => {
+  const items = all('SELECT * FROM hero_slides WHERE active = 1 ORDER BY position ASC, created_at ASC').map(slideToPublic);
+  res.json({ items, total: items.length });
 });
 
 app.get('/api/jobs', (req, res) => {
@@ -331,13 +688,10 @@ app.post('/api/applications', applicationLimiter, upload.single('resume'), async
   persistDatabase();
   const ref = reference(id);
   if (isEmailConfigured()) {
-    sendMessage({ to: email, subject: 'Recebemos sua candidatura • IM Personnel', text: `Olá, ${fullName}.\n\nSua candidatura para ${job.title} foi recebida pelo portal da IM Personnel. Protocolo: ${ref}.\n\nEsta mensagem confirma o recebimento e não representa uma decisão sobre o processo seletivo.` })
-      .catch(() => console.warn('Falha ao enviar confirmação de candidatura.'));
-  }
-  const notification = process.env.LEADS_NOTIFICATION_EMAIL;
-  if (notification && isEmailConfigured()) {
-    sendMessage({ to: notification, replyTo: email, subject: `Nova candidatura • ${job.title} • ${ref}`, text: `Uma candidatura foi registrada no portal da IM Personnel.\n\nVaga: ${job.title}\nProtocolo: ${ref}\nAcesse o painel administrativo para consultar os dados e o currículo.` })
-      .catch(() => console.warn('Falha ao enviar notificação de candidatura.'));
+    const variables = { nome: fullName, email, telefone: phone, vaga: job.title, protocolo: ref, cidade: city, estado: state };
+    notify({ key: 'application_candidate', to: email, variables });
+    const notification = emailSettings().notification;
+    if (notification) notify({ key: 'application_team', to: notification, replyTo: email, variables });
   }
   res.status(201).json({ ok: true, reference: ref, message: 'Sua candidatura foi recebida. Obrigado por compartilhar seu perfil com a IM Personnel.' });
 });
@@ -365,8 +719,10 @@ app.post('/api/talent', talentLimiter, upload.single('resume'), (req, res) => {
   persistDatabase();
   const ref = reference(id);
   if (isEmailConfigured()) {
-    sendMessage({ to: email, subject: 'Seu perfil foi recebido • IM Personnel', text: `Olá, ${fullName}.\n\nSeu perfil foi incluído no banco de talentos da IM Personnel com sua autorização. Protocolo: ${ref}.\n\nVocê pode pedir a atualização ou remoção dos dados pelo canal de privacidade.` })
-      .catch(() => console.warn('Falha ao enviar confirmação do banco de talentos.'));
+    const variables = { nome: fullName, email, telefone: phone, area, cidade: city, estado: state, protocolo: ref };
+    notify({ key: 'talent_candidate', to: email, variables });
+    const notification = emailSettings().notification;
+    if (notification) notify({ key: 'talent_team', to: notification, replyTo: email, variables });
   }
   res.status(201).json({ ok: true, reference: ref, message: 'Seu perfil foi recebido. Você poderá solicitar a atualização ou remoção dos dados pelo canal de privacidade.' });
 });
@@ -389,13 +745,10 @@ app.post('/api/leads', leadLimiter, async (req, res) => {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [id, values.contact_name, values.contact_role, values.company, values.email, values.phone, values.segment, values.city, values.state, values.service, values.position_count, values.need, values.desired_timeline, created, created]);
   persistDatabase();
   if (isEmailConfigured()) {
-    sendMessage({ to: values.email, subject: `Recebemos sua solicitação • ${reference(id)}`, text: `Olá, ${values.contact_name}.\n\nSua solicitação sobre ${values.service} foi registrada pela IM Personnel. Protocolo: ${reference(id)}.\n\nA equipe poderá retornar pelos dados informados.` })
-      .catch(() => console.warn('Falha ao enviar confirmação de solicitação empresarial.'));
-  }
-  const notification = process.env.LEADS_NOTIFICATION_EMAIL;
-  if (notification && isEmailConfigured()) {
-    sendMessage({ to: notification, replyTo: values.email, subject: `Nova solicitação empresarial • ${values.company} • ${reference(id)}`, text: `Nova solicitação recebida pelo site da IM Personnel.\n\nEmpresa: ${values.company}\nContato: ${values.contact_name}\nServiço: ${values.service}\nProtocolo: ${reference(id)}\n\nAcesse o painel administrativo para acompanhar este lead.` })
-      .catch(() => console.warn('Falha ao enviar notificação de lead.'));
+    const variables = { nome: values.contact_name, email: values.email, telefone: values.phone, empresa: values.company, servico: values.service, cidade: values.city, estado: values.state, protocolo: reference(id) };
+    notify({ key: 'lead_customer', to: values.email, variables });
+    const notification = emailSettings().notification;
+    if (notification) notify({ key: 'lead_team', to: notification, replyTo: values.email, variables });
   }
   res.status(201).json({ ok: true, reference: reference(id), message: 'Sua solicitação foi registrada. A equipe da IM Personnel poderá entrar em contato pelos dados informados.' });
 });
@@ -412,8 +765,7 @@ app.post('/api/privacy-requests', privacyLimiter, (req, res) => {
   persistDatabase();
   const ref = reference(id);
   if (isEmailConfigured()) {
-    sendMessage({ to: email, subject: `Solicitação de privacidade recebida • ${ref}`, text: `Olá, ${fullName}.\n\nRecebemos sua solicitação relativa a dados pessoais. Protocolo: ${ref}.\n\nA equipe responsável poderá entrar em contato para dar andamento ao pedido.` })
-      .catch(() => console.warn('Falha ao enviar confirmação de solicitação de privacidade.'));
+    notify({ key: 'privacy_customer', to: email, variables: { nome: fullName, email, tipo: requestType, protocolo: ref } });
   }
   res.status(201).json({ ok: true, reference: ref, message: 'Sua solicitação foi registrada para análise.' });
 });
@@ -449,21 +801,149 @@ app.post('/api/setup/initial-admin', initialAdminLimiter, (req, res) => {
 app.get('/api/admin/session', (req, res) => {
   const session = getSession(req);
   if (!session) return res.json({ authenticated: false });
-  res.json({ authenticated: true, csrf: session.csrf, user: { email: session.email } });
+  res.json({ authenticated: true, csrf: session.csrf, user: { email: session.email, name: session.name || '' } });
 });
+
+// Desafios de segundo fator ficam só na memória e valem por cinco minutos.
+const mfaChallenges = new Map();
+const MFA_CHALLENGE_TTL = 5 * 60 * 1000;
+
+function openSession(res, user) {
+  const key = crypto.randomBytes(32).toString('hex');
+  const csrf = crypto.randomBytes(24).toString('hex');
+  sessions.set(key, { userId: user.id, email: user.email, name: user.name || '', csrf, expiresAt: Date.now() + 12 * 60 * 60 * 1000 });
+  run('UPDATE admin_users SET last_login_at = ? WHERE id = ?', [nowIso(), user.id]);
+  persistDatabase();
+  res.cookie('im_admin', key, { httpOnly: true, secure: isProduction, sameSite: 'strict', path: '/', maxAge: 12 * 60 * 60 * 1000 });
+  return { authenticated: true, csrf, user: { email: user.email, name: user.name || '' } };
+}
 
 app.post('/api/admin/login', loginLimiter, (req, res) => {
   const email = asEmail(req.body?.email);
   const password = typeof req.body?.password === 'string' ? req.body.password : '';
-  const user = get('SELECT id, email, salt, password_hash FROM admin_users WHERE email = ?', [email]);
+  const user = get('SELECT id, email, name, salt, password_hash, active, totp_enabled FROM admin_users WHERE email = ?', [email]);
   const passwordOkay = user ? verifyPassword(password, user.salt, user.password_hash) : false;
   if (!user || !passwordOkay) return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
-  const key = crypto.randomBytes(32).toString('hex');
-  const csrf = crypto.randomBytes(24).toString('hex');
-  const session = { userId: user.id, email: user.email, csrf, expiresAt: Date.now() + 12 * 60 * 60 * 1000 };
-  sessions.set(key, session);
-  res.cookie('im_admin', key, { httpOnly: true, secure: isProduction, sameSite: 'strict', path: '/', maxAge: 12 * 60 * 60 * 1000 });
-  res.json({ authenticated: true, csrf, user: { email: user.email } });
+  if (!Number(user.active)) return res.status(403).json({ error: 'Esta conta administrativa está desativada. Procure quem gerencia os acessos do painel.' });
+  // Com a verificação em duas etapas ativa, a senha sozinha não abre sessão.
+  if (Number(user.totp_enabled)) {
+    const challenge = crypto.randomBytes(24).toString('hex');
+    mfaChallenges.set(challenge, { userId: user.id, expiresAt: Date.now() + MFA_CHALLENGE_TTL });
+    console.log(`Segundo fator solicitado para ${user.email}.`);
+    return res.json({ authenticated: false, totp_required: true, challenge, expires_in: Math.round(MFA_CHALLENGE_TTL / 1000) });
+  }
+  res.json(openSession(res, user));
+});
+
+app.post('/api/admin/login/totp', loginLimiter, (req, res) => {
+  const challenge = asText(req.body?.challenge, 64);
+  const pending = mfaChallenges.get(challenge);
+  if (!pending || pending.expiresAt < Date.now()) {
+    mfaChallenges.delete(challenge);
+    return res.status(401).json({ error: 'Esta verificação expirou. Entre novamente com e-mail e senha.' });
+  }
+  const user = get('SELECT id, email, name, active, totp_secret, recovery_codes FROM admin_users WHERE id = ?', [pending.userId]);
+  if (!user || !Number(user.active)) {
+    mfaChallenges.delete(challenge);
+    return res.status(403).json({ error: 'Esta conta administrativa está desativada. Procure quem gerencia os acessos do painel.' });
+  }
+  const secret = revealSecret(user.totp_secret);
+  const supplied = asText(req.body?.code, 20);
+  if (verifyTotp(secret, supplied)) {
+    mfaChallenges.delete(challenge);
+    run('INSERT INTO audit_log (id, actor_email, action, entity_type, entity_id, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [uuid(), user.email, 'admin.mfa_verified', 'admin_user', user.id, JSON.stringify({ method: 'app' }), nowIso()]);
+    persistDatabase();
+    return res.json(openSession(res, user));
+  }
+  // O código de recuperação substitui o aplicativo quando o celular não está à mão.
+  const codes = parseRecoveryCodes(user.recovery_codes);
+  const hash = recoveryCodeHash(supplied);
+  if (codes.includes(hash)) {
+    const remaining = codes.filter((item) => item !== hash);
+    run('UPDATE admin_users SET recovery_codes = ?, updated_at = ? WHERE id = ?', [JSON.stringify(remaining), nowIso(), user.id]);
+    mfaChallenges.delete(challenge);
+    run('INSERT INTO audit_log (id, actor_email, action, entity_type, entity_id, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [uuid(), user.email, 'admin.mfa_verified', 'admin_user', user.id, JSON.stringify({ method: 'recovery_code', remaining: remaining.length }), nowIso()]);
+    persistDatabase();
+    const result = openSession(res, user);
+    console.log(`Código de recuperação usado por ${user.email}. Restam ${remaining.length}.`);
+    return res.json({ ...result, recovery_codes_left: remaining.length });
+  }
+  run('INSERT INTO audit_log (id, actor_email, action, entity_type, entity_id, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [uuid(), user.email, 'admin.mfa_failed', 'admin_user', user.id, '{}', nowIso()]);
+  persistDatabase();
+  res.status(401).json({ error: 'Código inválido. Confira o aplicativo autenticador e tente novamente.' });
+});
+
+// --- Segundo fator da própria conta --------------------------------------------
+function parseRecoveryCodes(raw) {
+  try {
+    const parsed = JSON.parse(raw || '[]');
+    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === 'string') : [];
+  } catch { return []; }
+}
+function securityState(userId) {
+  const row = get('SELECT email, totp_secret, totp_enabled, totp_confirmed_at, recovery_codes FROM admin_users WHERE id = ?', [userId]);
+  if (!row) return null;
+  const secret = revealSecret(row.totp_secret);
+  return {
+    totp_enabled: Boolean(Number(row.totp_enabled)),
+    totp_confirmed_at: row.totp_confirmed_at || '',
+    secret_ready: Boolean(secret),
+    encryption_available: encryptionAvailable(),
+    recovery_codes_left: parseRecoveryCodes(row.recovery_codes).length,
+    email: row.email,
+  };
+}
+app.get('/api/admin/security', requireAdmin, (req, res) => {
+  const state = securityState(req.adminSession.userId);
+  if (!state) return res.status(404).json({ error: 'Conta administrativa não encontrada.' });
+  res.json(state);
+});
+app.post('/api/admin/security/totp/setup', requireAdmin, requireCsrf, (req, res) => {
+  const user = get('SELECT id, email, totp_enabled FROM admin_users WHERE id = ?', [req.adminSession.userId]);
+  if (!user) return res.status(404).json({ error: 'Conta administrativa não encontrada.' });
+  if (Number(user.totp_enabled)) return res.status(409).json({ error: 'A verificação em duas etapas já está ativa nesta conta.' });
+  const secret = generateTotpSecret();
+  run('UPDATE admin_users SET totp_secret = ?, totp_confirmed_at = ?, updated_at = ? WHERE id = ?', [protectSecret(secret), '', nowIso(), user.id]);
+  persistDatabase();
+  audit(req, 'admin.mfa_setup_started', 'admin_user', user.id, { email: user.email });
+  res.json({ secret, uri: otpauthUri({ secret, email: user.email }), digits: 6, period: 30 });
+});
+app.post('/api/admin/security/totp/enable', requireAdmin, requireCsrf, (req, res) => {
+  const user = get('SELECT id, email, totp_secret, totp_enabled FROM admin_users WHERE id = ?', [req.adminSession.userId]);
+  if (!user) return res.status(404).json({ error: 'Conta administrativa não encontrada.' });
+  if (Number(user.totp_enabled)) return res.status(409).json({ error: 'A verificação em duas etapas já está ativa nesta conta.' });
+  const secret = revealSecret(user.totp_secret);
+  if (!secret) return res.status(400).json({ error: 'Gere um novo código antes de confirmar a ativação.' });
+  if (!verifyTotp(secret, asText(req.body?.code, 20))) return res.status(400).json({ error: 'Código incorreto. Confira o que aparece no aplicativo autenticador.' });
+  const recoveryCodes = generateRecoveryCodes();
+  run('UPDATE admin_users SET totp_enabled = 1, totp_confirmed_at = ?, recovery_codes = ?, updated_at = ? WHERE id = ?', [nowIso(), JSON.stringify(recoveryCodes.map(recoveryCodeHash)), nowIso(), user.id]);
+  persistDatabase();
+  audit(req, 'admin.mfa_enabled', 'admin_user', user.id, { email: user.email });
+  res.json({ ok: true, recovery_codes: recoveryCodes, state: securityState(user.id) });
+});
+app.post('/api/admin/security/totp/disable', requireAdmin, requireCsrf, (req, res) => {
+  const user = get('SELECT id, email, salt, password_hash, totp_enabled FROM admin_users WHERE id = ?', [req.adminSession.userId]);
+  if (!user) return res.status(404).json({ error: 'Conta administrativa não encontrada.' });
+  if (!verifyPassword(typeof req.body?.password === 'string' ? req.body.password : '', user.salt, user.password_hash)) {
+    return res.status(403).json({ error: 'Senha incorreta. A verificação em duas etapas continua ativa.' });
+  }
+  run('UPDATE admin_users SET totp_enabled = 0, totp_secret = ?, totp_confirmed_at = ?, recovery_codes = ?, updated_at = ? WHERE id = ?', ['', '', '[]', nowIso(), user.id]);
+  persistDatabase();
+  audit(req, 'admin.mfa_disabled', 'admin_user', user.id, { email: user.email });
+  res.json({ ok: true, state: securityState(user.id) });
+});
+app.post('/api/admin/security/recovery-codes', requireAdmin, requireCsrf, (req, res) => {
+  const user = get('SELECT id, email, salt, password_hash, totp_enabled FROM admin_users WHERE id = ?', [req.adminSession.userId]);
+  if (!user) return res.status(404).json({ error: 'Conta administrativa não encontrada.' });
+  if (!Number(user.totp_enabled)) return res.status(409).json({ error: 'Ative a verificação em duas etapas antes de gerar códigos de recuperação.' });
+  if (!verifyPassword(typeof req.body?.password === 'string' ? req.body.password : '', user.salt, user.password_hash)) {
+    return res.status(403).json({ error: 'Senha incorreta. Os códigos atuais continuam valendo.' });
+  }
+  const recoveryCodes = generateRecoveryCodes();
+  run('UPDATE admin_users SET recovery_codes = ?, updated_at = ? WHERE id = ?', [JSON.stringify(recoveryCodes.map(recoveryCodeHash)), nowIso(), user.id]);
+  persistDatabase();
+  audit(req, 'admin.mfa_recovery_codes_regenerated', 'admin_user', user.id, { email: user.email, total: recoveryCodes.length });
+  res.json({ ok: true, recovery_codes: recoveryCodes, state: securityState(user.id) });
 });
 
 app.post('/api/admin/logout', requireAdmin, requireCsrf, (req, res) => {
@@ -495,7 +975,7 @@ app.get('/api/admin/dashboard', requireAdmin, (_req, res) => {
     const month = publicationMap.get(event.created_at.slice(0, 7));
     if (month) month.total += 1;
   }
-  res.json({ counts, recent_applications: recentApplications, recent_leads: recentLeads, applications_by_job: applicationsByJob, publication_timeline: publicationMonths });
+  res.json({ counts, recent_applications: recentApplications, recent_leads: recentLeads, applications_by_job: applicationsByJob, publication_timeline: publicationMonths, email_health: emailHealth() });
 });
 
 app.get('/api/admin/jobs', requireAdmin, (req, res) => {
@@ -541,24 +1021,61 @@ app.post('/api/admin/jobs/:id/duplicate', requireAdmin, requireCsrf, (req, res) 
 app.get('/api/admin/articles', requireAdmin, (_req, res) => {
   res.json({ items: all('SELECT * FROM articles ORDER BY updated_at DESC').map(articleToPublic) });
 });
-app.post('/api/admin/articles', requireAdmin, requireCsrf, (req, res) => {
-  const article = cleanArticleInput(req.body || {});
-  if (!article.title || !article.category || !article.intro || !article.body || !JSON.parse(article.body).length || !article.slug) return res.status(400).json({ error: 'Preencha título, categoria, resumo, slug e pelo menos um parágrafo.' });
-  if (get('SELECT id FROM articles WHERE slug = ?', [article.slug])) return res.status(409).json({ error: 'Já existe um conteúdo com este endereço amigável.' });
+app.post('/api/admin/articles', requireAdmin, requireCsrf, contentImageUpload.single('image'), (req, res) => {
+  const uploaded = req.file;
+  const body = { ...(req.body || {}) };
+  if (uploaded) {
+    if (!imageLooksValid(uploaded)) {
+      discardUpload(uploaded);
+      return res.status(400).json({ error: 'O arquivo enviado não parece ser uma imagem válida. Use JPG, PNG, WebP ou AVIF de até 5 MB.' });
+    }
+    body.image_key = path.basename(uploaded.filename);
+  }
+  const article = cleanArticleInput(body);
+  if (!article.title || !article.category || !article.intro || !article.body || !JSON.parse(article.body).length || !article.slug) {
+    discardUpload(uploaded);
+    return res.status(400).json({ error: 'Preencha título, categoria, resumo, slug e pelo menos um parágrafo.' });
+  }
+  if (get('SELECT id FROM articles WHERE slug = ?', [article.slug])) {
+    discardUpload(uploaded);
+    return res.status(409).json({ error: 'Já existe um conteúdo com este endereço amigável.' });
+  }
   const id = uuid(); const created = nowIso();
-  run('INSERT INTO articles (id, slug, category, title, intro, body, minutes, published, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [id, article.slug, article.category, article.title, article.intro, article.body, article.minutes, article.published, created, created]);
-  audit(req, 'article.created', 'article', id, { published: Boolean(article.published) });
+  run('INSERT INTO articles (id, slug, category, title, intro, body, minutes, image_key, image_alt, published, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [id, article.slug, article.category, article.title, article.intro, article.body, article.minutes, article.image_key, article.image_alt, article.published, created, created]);
+  persistDatabase();
+  audit(req, 'article.created', 'article', id, { published: Boolean(article.published), has_image: Boolean(article.image_key) });
   res.status(201).json({ article: articleToPublic(get('SELECT * FROM articles WHERE id = ?', [id])) });
 });
-app.put('/api/admin/articles/:id', requireAdmin, requireCsrf, (req, res) => {
+app.put('/api/admin/articles/:id', requireAdmin, requireCsrf, contentImageUpload.single('image'), (req, res) => {
   const existing = get('SELECT * FROM articles WHERE id = ?', [asText(req.params.id, 64)]);
-  if (!existing) return res.status(404).json({ error: 'Conteúdo não encontrado.' });
-  const article = cleanArticleInput(req.body || {}, existing);
-  if (!article.title || !article.category || !article.intro || !JSON.parse(article.body).length || !article.slug) return res.status(400).json({ error: 'Preencha título, categoria, resumo, slug e pelo menos um parágrafo.' });
-  if (get('SELECT id FROM articles WHERE slug = ? AND id <> ?', [article.slug, existing.id])) return res.status(409).json({ error: 'Já existe um conteúdo com este endereço amigável.' });
+  if (!existing) {
+    discardUpload(req.file);
+    return res.status(404).json({ error: 'Conteúdo não encontrado.' });
+  }
+  const uploaded = req.file;
+  const body = { ...(req.body || {}) };
+  if (uploaded) {
+    if (!imageLooksValid(uploaded)) {
+      discardUpload(uploaded);
+      return res.status(400).json({ error: 'O arquivo enviado não parece ser uma imagem válida. Use JPG, PNG, WebP ou AVIF de até 5 MB.' });
+    }
+    body.image_key = path.basename(uploaded.filename);
+  }
+  const article = cleanArticleInput(body, existing);
+  if (!article.title || !article.category || !article.intro || !JSON.parse(article.body).length || !article.slug) {
+    discardUpload(uploaded);
+    return res.status(400).json({ error: 'Preencha título, categoria, resumo, slug e pelo menos um parágrafo.' });
+  }
+  if (get('SELECT id FROM articles WHERE slug = ? AND id <> ?', [article.slug, existing.id])) {
+    discardUpload(uploaded);
+    return res.status(409).json({ error: 'Já existe um conteúdo com este endereço amigável.' });
+  }
   const updated = nowIso();
-  run('UPDATE articles SET slug=?, category=?, title=?, intro=?, body=?, minutes=?, published=?, updated_at=? WHERE id=?', [article.slug, article.category, article.title, article.intro, article.body, article.minutes, article.published, updated, existing.id]);
-  audit(req, 'article.updated', 'article', existing.id, { published: Boolean(article.published) });
+  run('UPDATE articles SET slug=?, category=?, title=?, intro=?, body=?, minutes=?, image_key=?, image_alt=?, published=?, updated_at=? WHERE id=?', [article.slug, article.category, article.title, article.intro, article.body, article.minutes, article.image_key, article.image_alt, article.published, updated, existing.id]);
+  persistDatabase();
+  const previousImage = contentImageKey(existing.image_key);
+  if (previousImage && previousImage !== article.image_key) discardContentImage(previousImage);
+  audit(req, 'article.updated', 'article', existing.id, { published: Boolean(article.published), has_image: Boolean(article.image_key), image_changed: previousImage !== article.image_key });
   res.json({ article: articleToPublic(get('SELECT * FROM articles WHERE id = ?', [existing.id])) });
 });
 
@@ -570,9 +1087,11 @@ app.get('/api/admin/applications', requireAdmin, (req, res) => {
   if (status) { conditions.push('a.status = ?'); params.push(status); }
   if (search) { conditions.push('(lower(a.full_name) LIKE ? OR lower(a.email) LIKE ? OR lower(j.title) LIKE ?)'); params.push(`%${search}%`, `%${search}%`, `%${search}%`); }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const { limit, offset } = paginationParams(req);
+  const total = Number(get(`SELECT COUNT(*) AS count FROM applications a JOIN jobs j ON j.id = a.job_id ${where}`, params)?.count || 0);
   const items = all(`SELECT a.id, a.full_name, a.email, a.phone, a.city, a.state, a.linkedin, a.cover_letter, a.status, a.internal_notes, a.resume_key, a.privacy_notice_version, a.created_at, a.updated_at, j.title AS job_title, j.slug AS job_slug
-    FROM applications a JOIN jobs j ON j.id = a.job_id ${where} ORDER BY a.created_at DESC LIMIT 300`, params);
-  res.json({ items });
+    FROM applications a JOIN jobs j ON j.id = a.job_id ${where} ORDER BY a.created_at DESC LIMIT ? OFFSET ?`, [...params, limit, offset]);
+  res.json({ items, total, limit, offset });
 });
 app.put('/api/admin/applications/:id', requireAdmin, requireCsrf, (req, res) => {
   const existing = get('SELECT id FROM applications WHERE id = ?', [asText(req.params.id, 64)]);
@@ -594,9 +1113,13 @@ app.delete('/api/admin/applications/:id', requireAdmin, requireCsrf, (req, res) 
 });
 app.get('/api/admin/talent', requireAdmin, (req, res) => {
   const search = `%${asText(req.query.q, 140).toLowerCase()}%`;
-  const rows = all(`SELECT id, full_name, email, phone, city, state, area, linkedin, resume_key, consent_at, privacy_notice_version, created_at, updated_at
-    FROM talent_profiles WHERE lower(full_name) LIKE ? OR lower(email) LIKE ? OR lower(area) LIKE ? ORDER BY created_at DESC LIMIT 300`, [search, search, search]);
-  res.json({ items: rows });
+  const where = 'WHERE lower(full_name) LIKE ? OR lower(email) LIKE ? OR lower(area) LIKE ?';
+  const params = [search, search, search];
+  const { limit, offset } = paginationParams(req);
+  const total = Number(get(`SELECT COUNT(*) AS count FROM talent_profiles ${where}`, params)?.count || 0);
+  const items = all(`SELECT id, full_name, email, phone, city, state, area, linkedin, resume_key, consent_at, privacy_notice_version, created_at, updated_at
+    FROM talent_profiles ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`, [...params, limit, offset]);
+  res.json({ items, total, limit, offset });
 });
 app.delete('/api/admin/talent/:id', requireAdmin, requireCsrf, (req, res) => {
   const existing = get('SELECT id, resume_key FROM talent_profiles WHERE id = ?', [asText(req.params.id, 64)]);
@@ -615,7 +1138,10 @@ app.get('/api/admin/leads', requireAdmin, (req, res) => {
   if (status) { conditions.push('status = ?'); params.push(status); }
   if (search) { conditions.push('(lower(company) LIKE ? OR lower(contact_name) LIKE ? OR lower(email) LIKE ?)'); params.push(`%${search}%`, `%${search}%`, `%${search}%`); }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-  res.json({ items: all(`SELECT * FROM leads ${where} ORDER BY created_at DESC LIMIT 300`, params) });
+  const { limit, offset } = paginationParams(req);
+  const total = Number(get(`SELECT COUNT(*) AS count FROM leads ${where}`, params)?.count || 0);
+  const items = all(`SELECT * FROM leads ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`, [...params, limit, offset]);
+  res.json({ items, total, limit, offset });
 });
 app.put('/api/admin/leads/:id', requireAdmin, requireCsrf, (req, res) => {
   const existing = get('SELECT id FROM leads WHERE id = ?', [asText(req.params.id, 64)]);
@@ -635,7 +1161,17 @@ app.delete('/api/admin/leads/:id', requireAdmin, requireCsrf, (req, res) => {
   res.json({ ok: true });
 });
 app.get('/api/admin/privacy-requests', requireAdmin, (req, res) => {
-  res.json({ items: all('SELECT * FROM privacy_requests ORDER BY created_at DESC LIMIT 300') });
+  const status = asText(req.query.status, 80);
+  const search = asText(req.query.q, 140).toLowerCase();
+  const conditions = [];
+  const params = [];
+  if (status) { conditions.push('status = ?'); params.push(status); }
+  if (search) { conditions.push('(lower(full_name) LIKE ? OR lower(email) LIKE ? OR lower(request_type) LIKE ?)'); params.push(`%${search}%`, `%${search}%`, `%${search}%`); }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const { limit, offset } = paginationParams(req);
+  const total = Number(get(`SELECT COUNT(*) AS count FROM privacy_requests ${where}`, params)?.count || 0);
+  const items = all(`SELECT * FROM privacy_requests ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`, [...params, limit, offset]);
+  res.json({ items, total, limit, offset });
 });
 app.put('/api/admin/privacy-requests/:id', requireAdmin, requireCsrf, (req, res) => {
   const existing = get('SELECT id FROM privacy_requests WHERE id = ?', [asText(req.params.id, 64)]);
@@ -646,8 +1182,415 @@ app.put('/api/admin/privacy-requests/:id', requireAdmin, requireCsrf, (req, res)
   audit(req, 'privacy_request.updated', 'privacy_request', existing.id, { status });
   res.json({ ok: true });
 });
-app.get('/api/admin/audit', requireAdmin, (_req, res) => {
-  res.json({ items: all('SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 200') });
+const adminUserColumns = 'id, email, name, active, totp_enabled, created_at, updated_at, last_login_at';
+app.get('/api/admin/users', requireAdmin, (req, res) => {
+  const users = all(`SELECT ${adminUserColumns} FROM admin_users ORDER BY active DESC, created_at ASC`).map(adminUserToPublic);
+  res.json({ items: users, current_user_id: req.adminSession.userId });
+});
+app.post('/api/admin/users', requireAdmin, requireCsrf, (req, res) => {
+  const name = asText(req.body?.name, 160);
+  const email = asEmail(req.body?.email);
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  if (!name) return res.status(400).json({ error: 'Informe o nome de quem vai usar o painel.' });
+  if (!validEmail(email)) return res.status(400).json({ error: 'Informe um endereço de e-mail válido.' });
+  if (!strongAdminPassword(password)) return res.status(400).json({ error: 'A senha deve ter ao menos 14 caracteres, com letras maiúsculas, minúsculas e números.' });
+  if (get('SELECT id FROM admin_users WHERE email = ?', [email])) return res.status(409).json({ error: 'Já existe uma conta administrativa com este e-mail.' });
+  const active = req.body?.active === undefined ? true : Boolean(req.body.active);
+  const id = uuid(); const created = nowIso();
+  const { salt, digest } = hashPassword(password);
+  run('INSERT INTO admin_users (id, email, name, salt, password_hash, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [id, email, name, salt, digest, active ? 1 : 0, created, created]);
+  persistDatabase();
+  audit(req, 'admin_user.created', 'admin_user', id, { email, name, active });
+  res.status(201).json({ user: adminUserToPublic(get(`SELECT ${adminUserColumns} FROM admin_users WHERE id = ?`, [id])) });
+});
+app.put('/api/admin/users/:id', requireAdmin, requireCsrf, (req, res) => {
+  const existing = get('SELECT id, email, name, salt, password_hash, active FROM admin_users WHERE id = ?', [asText(req.params.id, 64)]);
+  if (!existing) return res.status(404).json({ error: 'Usuário não encontrado.' });
+  // O nome só é obrigatório quando vem no corpo: alternar acesso de uma conta antiga (sem nome) não pode falhar.
+  const name = asText(req.body?.name ?? existing.name, 160);
+  if (req.body?.name !== undefined && !name) return res.status(400).json({ error: 'Informe o nome de quem vai usar o painel.' });
+  const wasActive = Boolean(Number(existing.active));
+  const nextActive = req.body?.active === undefined ? wasActive : Boolean(req.body.active);
+  const isSelf = existing.id === req.adminSession.userId;
+  if (isSelf && !nextActive) return res.status(409).json({ error: 'Você não pode desativar a sua própria conta. Peça a outra pessoa administradora.' });
+  if (wasActive && !nextActive) {
+    const otherActive = Number(get('SELECT COUNT(*) AS count FROM admin_users WHERE active = 1 AND id <> ?', [existing.id])?.count || 0);
+    if (otherActive === 0) return res.status(409).json({ error: 'Mantenha ao menos uma conta administrativa ativa. Ative outra pessoa antes de desativar esta.' });
+  }
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  let salt = existing.salt;
+  let passwordHash = existing.password_hash;
+  if (password) {
+    if (!strongAdminPassword(password)) return res.status(400).json({ error: 'A senha deve ter ao menos 14 caracteres, com letras maiúsculas, minúsculas e números.' });
+    const hashed = hashPassword(password);
+    salt = hashed.salt; passwordHash = hashed.digest;
+  }
+  run('UPDATE admin_users SET name=?, salt=?, password_hash=?, active=?, updated_at=? WHERE id=?', [name, salt, passwordHash, nextActive ? 1 : 0, nowIso(), existing.id]);
+  persistDatabase();
+  if (!nextActive) for (const [key, session] of sessions) if (session.userId === existing.id) sessions.delete(key);
+  const action = wasActive === nextActive ? (password ? 'admin_user.password_reset' : 'admin_user.updated') : (nextActive ? 'admin_user.activated' : 'admin_user.deactivated');
+  audit(req, action, 'admin_user', existing.id, { email: existing.email, name, active: nextActive, password_changed: Boolean(password) });
+  // Troca de senha merece evento próprio na trilha, mesmo quando vem junto de outra alteração.
+  if (password && action !== 'admin_user.password_reset') audit(req, 'admin_user.password_reset', 'admin_user', existing.id, { email: existing.email });
+  res.json({ user: adminUserToPublic(get(`SELECT ${adminUserColumns} FROM admin_users WHERE id = ?`, [existing.id])) });
+});
+// --- Exportação e backup -------------------------------------------------------
+// CSV com ponto e vírgula e BOM: é o que o Excel em português abre com acentuação correta.
+const CSV_ROW_LIMIT = 20_000;
+function sendCsv(res, filename, columns, rows) {
+  const cell = (value) => {
+    const text = value === null || value === undefined ? '' : String(value);
+    return /[";\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+  };
+  const lines = [columns.map((column) => cell(column.label)).join(';')];
+  for (const row of rows) lines.push(columns.map((column) => cell(column.value(row))).join(';'));
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(`\uFEFF${lines.join('\r\n')}\r\n`);
+}
+const exportKinds = {
+  applications: {
+    label: 'candidaturas',
+    columns: [
+      ['Protocolo', (row) => reference(row.id)], ['Recebida em', (row) => row.created_at], ['Status', (row) => row.status],
+      ['Nome', (row) => row.full_name], ['E-mail', (row) => row.email], ['Telefone', (row) => row.phone],
+      ['Cidade', (row) => row.city], ['UF', (row) => row.state], ['LinkedIn', (row) => row.linkedin],
+      ['Vaga', (row) => row.job_title], ['Currículo anexado', (row) => (row.resume_key ? 'Sim' : 'Não')],
+      ['Apresentação', (row) => row.cover_letter], ['Observação interna', (row) => row.internal_notes],
+      ['Aviso de privacidade', (row) => row.privacy_notice_version],
+    ],
+    count: (req) => {
+      const status = asText(req.query.status, 80);
+      const search = asText(req.query.q, 140).toLowerCase();
+      const conditions = [];
+      const params = [];
+      if (status) { conditions.push('a.status = ?'); params.push(status); }
+      if (search) { conditions.push('(lower(a.full_name) LIKE ? OR lower(a.email) LIKE ? OR lower(j.title) LIKE ?)'); params.push(`%${search}%`, `%${search}%`, `%${search}%`); }
+      const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+      return { total: Number(get(`SELECT COUNT(*) AS count FROM applications a JOIN jobs j ON j.id = a.job_id ${where}`, params)?.count || 0), where, params };
+    },
+    select: (where, params) => all(`SELECT a.*, j.title AS job_title FROM applications a JOIN jobs j ON j.id = a.job_id ${where} ORDER BY a.created_at DESC LIMIT ${CSV_ROW_LIMIT}`, params),
+  },
+  talent: {
+    label: 'banco-de-talentos',
+    columns: [
+      ['Nome', (row) => row.full_name], ['E-mail', (row) => row.email], ['Telefone', (row) => row.phone],
+      ['Cidade', (row) => row.city], ['UF', (row) => row.state], ['Área', (row) => row.area], ['LinkedIn', (row) => row.linkedin],
+      ['Autorização em', (row) => row.consent_at], ['Currículo anexado', (row) => (row.resume_key ? 'Sim' : 'Não')],
+      ['Aviso de privacidade', (row) => row.privacy_notice_version], ['Enviado em', (row) => row.created_at],
+    ],
+    count: (req) => {
+      const search = `%${asText(req.query.q, 140).toLowerCase()}%`;
+      return { total: Number(get('SELECT COUNT(*) AS count FROM talent_profiles WHERE lower(full_name) LIKE ? OR lower(email) LIKE ? OR lower(area) LIKE ?', [search, search, search])?.count || 0), where: '', params: [search, search, search] };
+    },
+    select: (_where, params) => all(`SELECT * FROM talent_profiles WHERE lower(full_name) LIKE ? OR lower(email) LIKE ? OR lower(area) LIKE ? ORDER BY created_at DESC LIMIT ${CSV_ROW_LIMIT}`, params),
+  },
+  leads: {
+    label: 'solicitacoes-empresariais',
+    columns: [
+      ['Recebido em', (row) => row.created_at], ['Etapa', (row) => row.status], ['Empresa', (row) => row.company],
+      ['Contato', (row) => row.contact_name], ['Cargo', (row) => row.contact_role], ['E-mail', (row) => row.email],
+      ['Telefone', (row) => row.phone], ['Segmento', (row) => row.segment], ['Cidade', (row) => row.city], ['UF', (row) => row.state],
+      ['Serviço', (row) => row.service], ['Posições', (row) => row.position_count], ['Prazo desejado', (row) => row.desired_timeline],
+      ['Necessidade', (row) => row.need], ['Responsável', (row) => row.assigned_to], ['Notas', (row) => row.notes],
+    ],
+    count: (req) => {
+      const status = asText(req.query.status, 80);
+      const search = asText(req.query.q, 140).toLowerCase();
+      const conditions = [];
+      const params = [];
+      if (status) { conditions.push('status = ?'); params.push(status); }
+      if (search) { conditions.push('(lower(company) LIKE ? OR lower(contact_name) LIKE ? OR lower(email) LIKE ?)'); params.push(`%${search}%`, `%${search}%`, `%${search}%`); }
+      return { total: Number(get(`SELECT COUNT(*) AS count FROM leads ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''}`, params)?.count || 0), where: conditions.length ? `WHERE ${conditions.join(' AND ')}` : '', params };
+    },
+    select: (where, params) => all(`SELECT * FROM leads ${where} ORDER BY created_at DESC LIMIT ${CSV_ROW_LIMIT}`, params),
+  },
+  privacy: {
+    label: 'pedidos-de-privacidade',
+    columns: [
+      ['Protocolo', (row) => reference(row.id)], ['Recebido em', (row) => row.created_at], ['Tipo', (row) => row.request_type],
+      ['Nome', (row) => row.full_name], ['E-mail', (row) => row.email], ['Detalhes', (row) => row.details],
+      ['Status', (row) => row.status], ['Encaminhamento interno', (row) => row.internal_notes],
+    ],
+    count: (req) => {
+      const status = asText(req.query.status, 80);
+      const search = asText(req.query.q, 140).toLowerCase();
+      const conditions = [];
+      const params = [];
+      if (status) { conditions.push('status = ?'); params.push(status); }
+      if (search) { conditions.push('(lower(full_name) LIKE ? OR lower(email) LIKE ? OR lower(request_type) LIKE ?)'); params.push(`%${search}%`, `%${search}%`, `%${search}%`); }
+      return { total: Number(get(`SELECT COUNT(*) AS count FROM privacy_requests ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''}`, params)?.count || 0), where: conditions.length ? `WHERE ${conditions.join(' AND ')}` : '', params };
+    },
+    select: (where, params) => all(`SELECT * FROM privacy_requests ${where} ORDER BY created_at DESC LIMIT ${CSV_ROW_LIMIT}`, params),
+  },
+  jobs: {
+    label: 'vagas',
+    columns: [
+      ['Título', (row) => row.title], ['Identificador', (row) => row.slug], ['Área', (row) => row.area],
+      ['Cidade', (row) => row.city], ['UF', (row) => row.state], ['Modalidade', (row) => row.modality],
+      ['Tipo', (row) => row.employment_type], ['Publicada', (row) => (Number(row.published) ? 'Sim' : 'Não')],
+      ['Destaque', (row) => (Number(row.featured) ? 'Sim' : 'Não')], ['Encerra em', (row) => row.expires_at],
+      ['Criada em', (row) => row.created_at], ['Atualizada em', (row) => row.updated_at],
+      ['Candidaturas', (row) => Number(get('SELECT COUNT(*) AS count FROM applications WHERE job_id = ?', [row.id])?.count || 0)],
+    ],
+    count: () => ({ total: Number(get('SELECT COUNT(*) AS count FROM jobs')?.count || 0), where: '', params: [] }),
+    select: () => all(`SELECT * FROM jobs ORDER BY created_at DESC LIMIT ${CSV_ROW_LIMIT}`),
+  },
+  audit: {
+    label: 'auditoria',
+    columns: [
+      ['Data', (row) => row.created_at], ['Usuário', (row) => row.actor_email], ['Ação', (row) => row.action],
+      ['Registro', (row) => row.entity_type], ['Identificador', (row) => row.entity_id], ['Detalhes', (row) => row.details],
+    ],
+    count: (req) => {
+      const search = asText(req.query.q, 140).toLowerCase();
+      return { total: Number(get(`SELECT COUNT(*) AS count FROM audit_log ${search ? 'WHERE lower(actor_email) LIKE ? OR lower(action) LIKE ? OR lower(entity_type) LIKE ? OR lower(details) LIKE ?' : ''}`, search ? Array(4).fill(`%${search}%`) : [])?.count || 0), where: search ? 'WHERE lower(actor_email) LIKE ? OR lower(action) LIKE ? OR lower(entity_type) LIKE ? OR lower(details) LIKE ?' : '', params: search ? Array(4).fill(`%${search}%`) : [] };
+    },
+    select: (where, params) => all(`SELECT * FROM audit_log ${where} ORDER BY created_at DESC LIMIT ${CSV_ROW_LIMIT}`, params),
+  },
+};
+app.get('/api/admin/export/:kind', requireAdmin, (req, res) => {
+  const kind = asText(req.params.kind, 40).replace(/\.csv$/i, '');
+  const source = exportKinds[kind];
+  if (!source) return res.status(404).json({ error: 'Exportação não disponível para este tipo de dado.' });
+  const { total, where, params } = source.count(req);
+  if (total === 0) return res.status(404).json({ error: 'Não há registros para exportar com os filtros atuais.' });
+  // O corte existe para o servidor não montar um arquivo gigante em memória. Aqui ele é explícito.
+  if (total > CSV_ROW_LIMIT) return res.status(413).json({ error: `Esta exportação tem ${total} registros e o limite por arquivo é ${CSV_ROW_LIMIT}. Use a busca ou o filtro para reduzir o conjunto.` });
+  const rows = source.select(where, params);
+  const filename = `${source.label}-${activeDateFilter()}.csv`;
+  audit(req, 'data.exported', 'export', kind, { total: rows.length, filters: { q: asText(req.query.q, 140), status: asText(req.query.status, 80) } });
+  sendCsv(res, filename, source.columns.map(([label, value]) => ({ label, value })), rows);
+});
+
+// Backup completo: base de dados, currículos privados e imagens de conteúdo.
+app.get('/api/admin/backup', requireAdmin, (req, res, next) => {
+  try {
+    const databaseBuffer = fs.readFileSync(databaseFilePath());
+    const resumeFiles = folderEntries(resumesPath, 'curriculos/', { skip: new Set(['.gitkeep']) });
+    const imageFiles = folderEntries(contentImagesPath, 'imagens/', { skip: new Set(['.gitkeep']) });
+    const counts = Object.fromEntries(['jobs', 'articles', 'applications', 'talent_profiles', 'leads', 'privacy_requests', 'admin_users', 'hero_slides', 'email_templates', 'audit_log'].map((table) => [table, Number(get(`SELECT COUNT(*) AS count FROM ${table}`)?.count || 0)]));
+    const manifest = [
+      'BACKUP DO SITE IM PERSONNEL',
+      `Gerado em: ${new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}`,
+      `Banco: ${path.basename(databaseFilePath())} (${databaseBytes(databaseBuffer.length)})`,
+      '',
+      'CONTEÚDO DO ARQUIVO',
+      `- ${path.basename(databaseFilePath())}: base SQLite com todos os cadastros`,
+      `- curriculos/: ${resumeFiles.length} arquivo(s) recebido(s) em candidaturas e no banco de talentos`,
+      `- imagens/: ${imageFiles.length} imagem(ns) de conteúdo e de destaques da página inicial`,
+      '',
+      'REGISTROS NO BANCO',
+      ...Object.entries(counts).map(([table, total]) => `- ${table}: ${total}`),
+      '',
+      'COMO RESTAURAR',
+      '1. Aponte DATA_DIR para uma pasta persistente.',
+      `2. Coloque o arquivo ${path.basename(databaseFilePath())} nessa pasta.`,
+      '3. Copie curriculos/ para private-resumes/ e imagens/ para content-images/.',
+      '4. Inicie a aplicação: as migrações pendentes são aplicadas automaticamente.',
+      '',
+      'AVISO',
+      'Este arquivo contém dados pessoais e currículos. Guarde em local restrito e',
+      'descarte as cópias antigas conforme os prazos de retenção definidos.',
+    ].join('\n');
+    const entries = [
+      { name: 'LEIA-ME.txt', read: () => Buffer.from(manifest, 'utf-8') },
+      { name: path.basename(databaseFilePath()), read: () => databaseBuffer },
+      ...resumeFiles,
+      ...imageFiles,
+    ];
+    audit(req, 'backup.downloaded', 'backup', activeDateFilter(), { records: counts, files: resumeFiles.length + imageFiles.length, database_bytes: databaseBuffer.length });
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="backup-im-personnel-${activeDateFilter()}.zip"`);
+    res.setHeader('Cache-Control', 'no-store');
+    for (const chunk of buildZip(entries)) res.write(chunk);
+    res.end();
+  } catch (error) { next(error); }
+});
+function databaseBytes(bytes) {
+  if (bytes < 1024) return `${bytes} bytes`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} kB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1).replace('.', ',')} MB`;
+}
+
+app.get('/api/admin/audit', requireAdmin, (req, res) => {
+  const search = asText(req.query.q, 140).toLowerCase();
+  const where = search ? 'WHERE lower(actor_email) LIKE ? OR lower(action) LIKE ? OR lower(entity_type) LIKE ? OR lower(details) LIKE ?' : '';
+  const params = search ? Array(4).fill(`%${search}%`) : [];
+  const { limit, offset } = paginationParams(req, 200);
+  const total = Number(get(`SELECT COUNT(*) AS count FROM audit_log ${where}`, params)?.count || 0);
+  const items = all(`SELECT * FROM audit_log ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`, [...params, limit, offset]);
+  res.json({ items, total, limit, offset });
+});
+
+const slideColumns = 'eyebrow, location, side_label, navigation_label, title, body_text, primary_label, primary_to, secondary_label, secondary_to, footnote, image_position, image_alt, image_key, position, active';
+app.get('/api/admin/hero-slides', requireAdmin, (_req, res) => {
+  res.json({ items: all('SELECT * FROM hero_slides ORDER BY position ASC, created_at ASC').map(slideToPublic) });
+});
+app.post('/api/admin/hero-slides', requireAdmin, requireCsrf, contentImageUpload.single('image'), (req, res) => {
+  const uploaded = req.file;
+  const body = { ...(req.body || {}) };
+  if (uploaded) {
+    if (!imageLooksValid(uploaded)) { discardUpload(uploaded); return res.status(400).json({ error: INVALID_IMAGE_MESSAGE }); }
+    body.image_key = path.basename(uploaded.filename);
+  }
+  const slide = cleanSlideInput(body);
+  const invalid = validateSlide(slide);
+  if (invalid) { discardUpload(uploaded); return res.status(400).json({ error: invalid }); }
+  const id = uuid(); const created = nowIso();
+  const slug = `${slugify(slide.navigation_label) || 'destaque'}-${id.slice(0, 6)}`;
+  if (get('SELECT id FROM hero_slides WHERE slug = ?', [slug])) { discardUpload(uploaded); return res.status(409).json({ error: 'Já existe um destaque com este identificador.' }); }
+  const total = Number(get('SELECT COUNT(*) AS count FROM hero_slides')?.count || 0);
+  const position = body.position === undefined ? total : slide.position;
+  run(`INSERT INTO hero_slides (id, slug, ${slideColumns}, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, slug, slide.eyebrow, slide.location, slide.side_label, slide.navigation_label, slide.title, slide.body_text, slide.primary_label, slide.primary_to, slide.secondary_label, slide.secondary_to, slide.footnote, slide.image_position, slide.image_alt, slide.image_key, position, slide.active, created, created]);
+  persistDatabase();
+  audit(req, 'hero_slide.created', 'hero_slide', id, { active: Boolean(slide.active) });
+  res.status(201).json({ slide: slideToPublic(get('SELECT * FROM hero_slides WHERE id = ?', [id])) });
+});
+app.put('/api/admin/hero-slides/:id', requireAdmin, requireCsrf, contentImageUpload.single('image'), (req, res) => {
+  const existing = get('SELECT * FROM hero_slides WHERE id = ?', [asText(req.params.id, 64)]);
+  if (!existing) { discardUpload(req.file); return res.status(404).json({ error: 'Destaque não encontrado.' }); }
+  const uploaded = req.file;
+  const body = { ...(req.body || {}) };
+  if (uploaded) {
+    if (!imageLooksValid(uploaded)) { discardUpload(uploaded); return res.status(400).json({ error: INVALID_IMAGE_MESSAGE }); }
+    body.image_key = path.basename(uploaded.filename);
+  }
+  const slide = cleanSlideInput(body, existing);
+  const invalid = validateSlide(slide);
+  if (invalid) { discardUpload(uploaded); return res.status(400).json({ error: invalid }); }
+  run(`UPDATE hero_slides SET eyebrow=?, location=?, side_label=?, navigation_label=?, title=?, body_text=?, primary_label=?, primary_to=?, secondary_label=?, secondary_to=?, footnote=?, image_position=?, image_alt=?, image_key=?, position=?, active=?, updated_at=? WHERE id=?`,
+    [slide.eyebrow, slide.location, slide.side_label, slide.navigation_label, slide.title, slide.body_text, slide.primary_label, slide.primary_to, slide.secondary_label, slide.secondary_to, slide.footnote, slide.image_position, slide.image_alt, slide.image_key, slide.position, slide.active, nowIso(), existing.id]);
+  persistDatabase();
+  const previousImage = contentImageKey(existing.image_key);
+  if (previousImage && previousImage !== slide.image_key) discardContentImage(previousImage);
+  audit(req, 'hero_slide.updated', 'hero_slide', existing.id, { active: Boolean(slide.active), image_changed: previousImage !== slide.image_key });
+  res.json({ slide: slideToPublic(get('SELECT * FROM hero_slides WHERE id = ?', [existing.id])) });
+});
+app.post('/api/admin/hero-slides/reorder', requireAdmin, requireCsrf, (req, res) => {
+  const order = Array.isArray(req.body?.order) ? req.body.order.map((id) => asText(id, 64)).filter(Boolean) : [];
+  if (!order.length) return res.status(400).json({ error: 'Informe a nova ordem dos destaques.' });
+  const known = new Set(all('SELECT id FROM hero_slides').map((row) => row.id));
+  if (order.length !== known.size || !order.every((id) => known.has(id))) return res.status(400).json({ error: 'A nova ordem precisa listar exatamente os destaques existentes.' });
+  order.forEach((id, index) => run('UPDATE hero_slides SET position = ?, updated_at = ? WHERE id = ?', [index, nowIso(), id]));
+  persistDatabase();
+  audit(req, 'hero_slide.reordered', 'hero_slide', 'reorder', { count: order.length });
+  res.json({ items: all('SELECT * FROM hero_slides ORDER BY position ASC, created_at ASC').map(slideToPublic) });
+});
+app.delete('/api/admin/hero-slides/:id', requireAdmin, requireCsrf, (req, res) => {
+  const existing = get('SELECT id, image_key FROM hero_slides WHERE id = ?', [asText(req.params.id, 64)]);
+  if (!existing) return res.status(404).json({ error: 'Destaque não encontrado.' });
+  if (Number(get('SELECT COUNT(*) AS count FROM hero_slides')?.count || 0) <= 1) return res.status(409).json({ error: 'Mantenha ao menos um destaque na página inicial. Prefira desativar.' });
+  audit(req, 'hero_slide.deleted', 'hero_slide', existing.id);
+  run('DELETE FROM hero_slides WHERE id = ?', [existing.id]);
+  persistDatabase();
+  discardContentImage(existing.image_key);
+  res.json({ ok: true });
+});
+
+const EMAIL_SETTING_LIMITS = { SMTP_HOST: 253, SMTP_PORT: 5, SMTP_SECURE: 5, SMTP_USER: 254, SMTP_PASS: 512, EMAIL_FROM: 254, LEADS_NOTIFICATION_EMAIL: 254 };
+app.get('/api/admin/email-settings', requireAdmin, (_req, res) => {
+  const settings = emailSettings();
+  // Só conta como "definido no painel" o que foi gravado com valor; campo limpo volta a usar o ambiente.
+  const storedInPanel = all('SELECT key, value FROM settings')
+    .filter((row) => row.key in EMAIL_SETTING_LIMITS && String(row.value ?? '').trim() !== '')
+    .map((row) => row.key);
+  // A senha guardada pode estar protegida (ok), em texto puro (versão anterior) ou
+  // ilegível (APP_SECRET ausente ou trocado). O painel precisa distinguir os casos.
+  const storedPass = String(get("SELECT value FROM settings WHERE key = 'SMTP_PASS'")?.value ?? '');
+  res.json({
+    SMTP_HOST: settings.host, SMTP_PORT: settings.port, SMTP_SECURE: settings.secure, SMTP_USER: settings.user,
+    SMTP_PASS_SET: Boolean(storedPass.trim()), EMAIL_FROM: settings.from, LEADS_NOTIFICATION_EMAIL: settings.notification,
+    configured: isEmailConfigured(), stored_in_panel: storedInPanel,
+    secrets_protected: isProtectedSecret(storedPass), encryption_available: encryptionAvailable(), pass_readable: Boolean(settings.pass),
+    health: emailHealth(),
+    recent_events: all('SELECT id, template_key, kind, recipient, status, detail, created_at FROM email_events ORDER BY created_at DESC LIMIT 25'),
+    templates: all('SELECT key, label, audience, subject, body, enabled, updated_at FROM email_templates ORDER BY rowid ASC').map((row) => ({ ...row, enabled: Boolean(Number(row.enabled)), variables: templateVariables.get(row.key) || [] })),
+  });
+});
+app.put('/api/admin/email-settings', requireAdmin, requireCsrf, (req, res) => {
+  const body = req.body || {};
+  const changes = {};
+  for (const key of Object.keys(EMAIL_SETTING_LIMITS)) {
+    if (body[key] === undefined) continue;
+    // O painel envia SMTP_SECURE como booleano e SMTP_PORT como número; asText só aproveita texto.
+    const received = body[key];
+    let value = asText(typeof received === 'boolean' || typeof received === 'number' ? String(received) : received, EMAIL_SETTING_LIMITS[key]);
+    if (key === 'SMTP_PORT' && value) {
+      const port = Number.parseInt(value, 10);
+      if (!/^\d{1,5}$/.test(value) || port < 1 || port > 65535) return res.status(400).json({ error: 'A porta SMTP deve ser um número entre 1 e 65535.' });
+    }
+    if (key === 'SMTP_SECURE') value = asBoolean(value) ? 'true' : 'false';
+    if (key === 'EMAIL_FROM' && value && !/^[^@\s]+@[^@\s]+$/.test(value.replace(/^[^<]*<([^>]*)>$/, '$1'))) return res.status(400).json({ error: 'Informe um remetente válido, como IM Personnel <contato@dominio.com.br>.' });
+    if (key === 'LEADS_NOTIFICATION_EMAIL' && value && !validEmail(value)) return res.status(400).json({ error: 'Informe um e-mail válido para receber os avisos da equipe.' });
+    // A senha do SMTP sai do painel protegida, com a chave derivada de APP_SECRET.
+    setSetting(key, key === 'SMTP_PASS' ? protectSecret(value) : value);
+    // A senha nunca volta em resposta nem entra na trilha de auditoria.
+    changes[key] = key === 'SMTP_PASS' ? (value ? 'definida' : 'removida') : value;
+  }
+  if (!Object.keys(changes).length) return res.status(400).json({ error: 'Nenhuma configuração foi enviada.' });
+  persistDatabase();
+  resetMailer();
+  audit(req, 'email_settings.updated', 'settings', 'email', changes);
+  // Devolve o mesmo retrato do GET (sem os modelos) para o painel atualizar sem nova consulta.
+  const updated = emailSettings();
+  const savedPass = String(get("SELECT value FROM settings WHERE key = 'SMTP_PASS'")?.value ?? '');
+  res.json({
+    ok: true,
+    SMTP_HOST: updated.host, SMTP_PORT: updated.port, SMTP_SECURE: updated.secure, SMTP_USER: updated.user,
+    SMTP_PASS_SET: Boolean(savedPass.trim()), EMAIL_FROM: updated.from, LEADS_NOTIFICATION_EMAIL: updated.notification,
+    configured: isEmailConfigured(), secrets_protected: isProtectedSecret(savedPass), encryption_available: encryptionAvailable(), pass_readable: Boolean(updated.pass),
+    stored_in_panel: all('SELECT key, value FROM settings')
+      .filter((row) => row.key in EMAIL_SETTING_LIMITS && String(row.value ?? '').trim() !== '')
+      .map((row) => row.key),
+  });
+});
+app.post('/api/admin/email-settings/test', requireAdmin, requireCsrf, async (req, res) => {
+  const settings = emailSettings();
+  const to = asEmail(req.body?.to) || settings.notification || settings.from.replace(/^[^<]*<([^>]*)>$/, '$1');
+  if (!validEmail(to)) return res.status(400).json({ error: 'Informe um destinatário válido para o teste.' });
+  if (!isEmailConfigured()) return res.status(400).json({ error: 'Configure o servidor SMTP e o remetente antes de testar.' });
+  try {
+    await verifyTransport();
+    const sent = await sendMessage({ to, subject: 'Teste de configuração de e-mail • IM Personnel', text: `Mensagem de teste enviada pelo painel administrativo em ${new Intl.DateTimeFormat('pt-BR', { dateStyle: 'long', timeStyle: 'short' }).format(new Date())}.\n\nSe você recebeu esta mensagem, o SMTP está configurado corretamente.` });
+    recordEmailEvent({ kind: 'test', recipient: to, status: sent ? 'sent' : 'skipped', detail: sent ? '' : 'transporte indisponível' });
+    audit(req, 'email_settings.test_sent', 'settings', 'email', { to });
+    res.json({ ok: Boolean(sent), message: `Enviamos uma mensagem de teste para ${to}.` });
+  } catch (error) {
+    const detail = maskEmailError(error?.message || 'falha desconhecida');
+    recordEmailEvent({ kind: 'test', recipient: to, status: 'failed', detail });
+    res.status(400).json({ error: `Não foi possível enviar o teste: ${detail}` });
+  }
+});
+app.get('/api/admin/email-templates', requireAdmin, (_req, res) => {
+  res.json({ items: all('SELECT key, label, audience, subject, body, enabled, updated_at FROM email_templates ORDER BY rowid ASC').map((row) => ({ ...row, enabled: Boolean(Number(row.enabled)), variables: templateVariables.get(row.key) || [] })) });
+});
+app.put('/api/admin/email-templates/:key', requireAdmin, requireCsrf, (req, res) => {
+  const existing = get('SELECT key, subject, body, enabled FROM email_templates WHERE key = ?', [asText(req.params.key, 60)]);
+  if (!existing) return res.status(404).json({ error: 'Modelo não encontrado.' });
+  const subject = asText(req.body?.subject ?? existing.subject, 200);
+  const body = typeof req.body?.body === 'string' ? req.body.body.slice(0, 4000) : existing.body;
+  const enabled = req.body?.enabled === undefined ? Boolean(Number(existing.enabled)) : asBoolean(req.body.enabled);
+  if (!subject) return res.status(400).json({ error: 'O assunto não pode ficar vazio.' });
+  const available = templateVariables.get(existing.key) || [];
+  const used = [...new Set([...`${subject}\n${body}`.matchAll(PLACEHOLDER_PATTERN)].map((match) => match[1]))];
+  const unknown = used.filter((name) => !available.includes(name));
+  if (unknown.length) return res.status(400).json({ error: `Variáveis desconhecidas: ${unknown.map((name) => `{{${name}}}`).join(', ')}. Disponíveis neste modelo: ${available.map((name) => `{{${name}}}`).join(', ')}.` });
+  run('UPDATE email_templates SET subject=?, body=?, enabled=?, updated_at=? WHERE key=?', [subject, body, enabled ? 1 : 0, nowIso(), existing.key]);
+  persistDatabase();
+  audit(req, 'email_template.updated', 'email_template', existing.key, { enabled });
+  const saved = get('SELECT key, label, audience, subject, body, enabled, updated_at FROM email_templates WHERE key = ?', [existing.key]);
+  res.json({ template: { ...saved, enabled: Boolean(Number(saved.enabled)), variables: available } });
+});
+app.post('/api/admin/email-templates/:key/preview', requireAdmin, requireCsrf, (req, res) => {
+  const existing = get('SELECT key, subject, body FROM email_templates WHERE key = ?', [asText(req.params.key, 60)]);
+  if (!existing) return res.status(404).json({ error: 'Modelo não encontrado.' });
+  const variables = Object.fromEntries((templateVariables.get(existing.key) || []).map((name) => [name, sampleVariable(name)]));
+  const overrides = req.body?.variables && typeof req.body.variables === 'object' ? req.body.variables : {};
+  for (const [name, value] of Object.entries(overrides)) if (name in variables) variables[name] = asText(value, 200);
+  res.json({ subject: renderTemplate(existing.subject, variables), body: renderTemplate(existing.body, variables), variables });
 });
 app.get('/api/admin/files/:key', requireAdmin, (req, res) => {
   const key = asText(req.params.key, 64);
@@ -699,10 +1642,11 @@ app.get('/sitemap.xml', (_req, res) => {
 
 if (isProduction) {
   const dist = path.join(root, 'dist');
-  app.use(express.static(dist, { etag: true, maxAge: '1h', setHeaders(res, file) {
-    if (file.endsWith('index.html')) res.setHeader('Cache-Control', 'no-cache');
-  } }));
-  app.get(/^(?!\/api\/).*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')));
+  // index: false deixa o HTML da aplicação com a rota do fim, que injeta as tags de compartilhamento.
+  app.use(express.static(dist, { index: false, etag: true, maxAge: '1h' }));
+  app.get(/^(?!\/api\/).*/, (req, res) => {
+    res.status(200).setHeader('Content-Type', 'text/html; charset=utf-8').setHeader('Cache-Control', 'public, max-age=0, must-revalidate').end(injectSeo(appShellHtml(), req.path));
+  });
 } else {
   const vite = await createViteServer({ configFile: path.join(root, 'vite.config.ts'), server: { middlewareMode: true, allowedHosts: ['.e2b.app', 'localhost', '127.0.0.1'], hmr: { host: undefined } }, appType: 'custom' });
   app.use(vite.middlewares);
@@ -710,7 +1654,7 @@ if (isProduction) {
     try {
       const template = await fs.promises.readFile(path.join(root, 'index.html'), 'utf-8');
       const html = await vite.transformIndexHtml(req.originalUrl, template);
-      res.status(200).setHeader('Content-Type', 'text/html').end(html);
+      res.status(200).setHeader('Content-Type', 'text/html; charset=utf-8').end(injectSeo(html, req.path));
     } catch (error) { next(error); }
   });
 }

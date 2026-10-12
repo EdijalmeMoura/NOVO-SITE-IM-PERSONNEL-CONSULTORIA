@@ -1,114 +1,13 @@
 import { useEffect, useState } from 'react';
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, Check, Compass, MoveUpRight, Pause, Play } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { services, methodology, insights, type Insight } from '../data';
+import { services, methodology, insights, heroSlides, type HeroSlide, type Insight } from '../data';
 import { apiGet, type Job } from '../lib/api';
 import { usePageMeta } from '../hooks/usePageMeta';
 import { SectionHeading } from '../components/SectionHeading';
 import { ServiceCard } from '../components/ServiceCard';
 import { JobCard } from '../components/JobCard';
 
-type HeroSlide = {
-  id: string;
-  eyebrow: string;
-  location: string;
-  sideLabel: string;
-  navigationLabel: string;
-  title: { text: string; accent?: boolean }[];
-  text: string;
-  primary: { to: string; label: string };
-  secondary: { to: string; label: string };
-  footnote: string;
-  imagePosition: string;
-  imageAlt: string;
-};
-
-const heroSlides: HeroSlide[] = [
-  {
-    id: 'pessoas-e-negocios',
-    eyebrow: 'CONSULTORIA DE PESSOAS & NEGÓCIOS',
-    location: 'RECIFE, PE',
-    sideLabel: 'HUMAN CAPITAL / RECIFE',
-    navigationLabel: 'Pessoas e negócios',
-    title: [{ text: 'Pessoas certas' }, { text: 'transformam', accent: true }, { text: 'negócios.' }],
-    text: 'Conectamos talentos, lideranças e organizações por meio de soluções estratégicas em recrutamento, seleção e gestão de pessoas.',
-    primary: { to: '/solucoes', label: 'Encontre sua solução' },
-    secondary: { to: '/vagas', label: 'Explore oportunidades' },
-    footnote: 'Pessoas no centro. Negócios em movimento.',
-    imagePosition: 'center 52%',
-    imageAlt: 'Lideranças e profissionais colaborando em uma conversa de estratégia',
-  },
-  {
-    id: 'recrutamento',
-    eyebrow: 'RECRUTAMENTO & SELEÇÃO',
-    location: 'PARA EMPRESAS',
-    sideLabel: 'TALENT ACQUISITION / 02',
-    navigationLabel: 'Recrutamento e seleção',
-    title: [{ text: 'Contratações que' }, { text: 'começam com escuta.', accent: true }],
-    text: 'Compreendemos o contexto, a cultura e o desafio de cada posição para apoiar escolhas mais alinhadas ao negócio.',
-    primary: { to: '/servicos/recrutamento-e-selecao', label: 'Conheça o serviço' },
-    secondary: { to: '/solicitar-proposta', label: 'Falar com a equipe' },
-    footnote: 'Contexto, critério e proximidade em cada busca.',
-    imagePosition: '42% 52%',
-    imageAlt: 'Profissionais em uma conversa de trabalho',
-  },
-  {
-    id: 'liderancas',
-    eyebrow: 'EXECUTIVE SEARCH',
-    location: 'LIDERANÇAS',
-    sideLabel: 'LEADERSHIP / 03',
-    navigationLabel: 'Executive Search',
-    title: [{ text: 'O próximo ciclo pede' }, { text: 'a liderança certa.', accent: true }],
-    text: 'Apoiamos organizações na busca por lideranças alinhadas ao momento, à cultura e às decisões que vêm pela frente.',
-    primary: { to: '/servicos/executive-search', label: 'Conheça o Executive Search' },
-    secondary: { to: '/solicitar-proposta', label: 'Conversar sobre a busca' },
-    footnote: 'Liderança é direção, presença e futuro compartilhado.',
-    imagePosition: '58% 52%',
-    imageAlt: 'Profissionais trocando perspectivas em uma reunião',
-  },
-  {
-    id: 'industrial',
-    eyebrow: 'SELEÇÃO INDUSTRIAL',
-    location: 'OPERAÇÕES',
-    sideLabel: 'INDUSTRIAL / 04',
-    navigationLabel: 'Seleção industrial',
-    title: [{ text: 'Precisão para formar' }, { text: 'times que fazem acontecer.', accent: true }],
-    text: 'Desenhamos processos de seleção atentos às exigências operacionais, técnicas e humanas de cada ambiente industrial.',
-    primary: { to: '/servicos/selecao-industrial', label: 'Ver solução industrial' },
-    secondary: { to: '/solicitar-proposta', label: 'Solicitar uma conversa' },
-    footnote: 'Rigor técnico sem perder de vista as pessoas.',
-    imagePosition: '70% 52%',
-    imageAlt: 'Equipe de profissionais em colaboração',
-  },
-  {
-    id: 'gestao',
-    eyebrow: 'CONSULTORIA DE RH',
-    location: 'GESTÃO DE PESSOAS',
-    sideLabel: 'PEOPLE STRATEGY / 05',
-    navigationLabel: 'Gestão de pessoas',
-    title: [{ text: 'Decisões de pessoas,' }, { text: 'com mais clareza.', accent: true }],
-    text: 'Estruturamos conversas, processos e práticas que ajudam a transformar desafios de gestão em caminhos possíveis.',
-    primary: { to: '/servicos/consultoria-de-rh', label: 'Conheça a consultoria' },
-    secondary: { to: '/solucoes', label: 'Ver todas as soluções' },
-    footnote: 'Gestão que combina intenção, processo e realidade.',
-    imagePosition: '31% 52%',
-    imageAlt: 'Pessoas discutindo estratégia em ambiente de trabalho',
-  },
-  {
-    id: 'oportunidades',
-    eyebrow: 'PARA PROFISSIONAIS',
-    location: 'NOVOS CAMINHOS',
-    sideLabel: 'CAREERS / 06',
-    navigationLabel: 'Oportunidades profissionais',
-    title: [{ text: 'Seu próximo passo' }, { text: 'pode começar aqui.', accent: true }],
-    text: 'Conheça as oportunidades publicadas e apresente seu perfil para futuras conversas com a IM Personnel.',
-    primary: { to: '/vagas', label: 'Ver vagas disponíveis' },
-    secondary: { to: '/curriculo', label: 'Apresentar meu perfil' },
-    footnote: 'Talentos em movimento. Possibilidades abertas.',
-    imagePosition: '52% 52%',
-    imageAlt: 'Profissionais reunidos em uma conversa colaborativa',
-  },
-];
 
 export function Home() {
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -117,7 +16,8 @@ export function Home() {
   const [activeHeroSlide, setActiveHeroSlide] = useState(0);
   const [carouselPaused, setCarouselPaused] = useState(false);
   const [carouselHovering, setCarouselHovering] = useState(false);
-  const activeSlide = heroSlides[activeHeroSlide];
+  const [slides, setSlides] = useState<HeroSlide[]>(heroSlides);
+  const activeSlide = slides[activeHeroSlide] || slides[0];
   usePageMeta('Pessoas certas transformam negócios', 'Conectamos talentos, lideranças e organizações por meio de soluções estratégicas em recrutamento, seleção e gestão de pessoas.', '/');
   useEffect(() => {
     const script = document.createElement('script');
@@ -133,6 +33,8 @@ export function Home() {
   }, []);
   useEffect(() => {
     apiGet<{ items: Insight[] }>('/api/articles?limit=3').then((data) => setPublicInsights(data.items)).catch(() => {});
+    // Os destaques da página inicial são editáveis no painel; o conteúdo revisado acima é o fallback.
+    apiGet<{ items: HeroSlide[] }>('/api/hero-slides').then((data) => { if (data.items?.length) setSlides(data.items); }).catch(() => {});
   }, []);
   useEffect(() => {
     apiGet<{ items: Job[] }>('/api/jobs?per_page=3')
@@ -142,14 +44,14 @@ export function Home() {
   }, []);
   useEffect(() => {
     if (carouselPaused || carouselHovering || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    const timer = window.setInterval(() => setActiveHeroSlide((current) => (current + 1) % heroSlides.length), 7000);
+    const timer = window.setInterval(() => setActiveHeroSlide((current) => (current + 1) % slides.length), 7000);
     return () => window.clearInterval(timer);
   }, [carouselPaused, carouselHovering]);
 
   return (
     <main className="home-page">
       <section className="hero hero-carousel" aria-roledescription="carrossel" aria-label="Destaques da IM Personnel" onMouseEnter={() => setCarouselHovering(true)} onMouseLeave={() => setCarouselHovering(false)}>
-        <img key={activeSlide.id} className="hero-image hero-carousel-image" src="/images/hero-team.jpg" alt={activeSlide.imageAlt} style={{ objectPosition: activeSlide.imagePosition }} fetchPriority="high" />
+        <img key={activeSlide.id} className="hero-image hero-carousel-image" src={activeSlide.imageUrl || '/images/hero-team.jpg'} alt={activeSlide.imageAlt} style={{ objectPosition: activeSlide.imagePosition }} fetchPriority="high" />
         <div className="hero-grain" aria-hidden="true" />
         <div className="container hero-content">
           <div className="hero-eyebrow"><span className="hero-pulse" /> {activeSlide.eyebrow} <i /> {activeSlide.location}</div>
@@ -160,14 +62,14 @@ export function Home() {
             <Link to={activeSlide.secondary.to} className="hero-secondary-link">{activeSlide.secondary.label} <ArrowRight size={16} /></Link>
           </div>
           <div className="hero-bottom-note">
-            <span>{String(activeHeroSlide + 1).padStart(2, '0')} — {String(heroSlides.length).padStart(2, '0')}</span><div className="hero-bottom-line" /><span>{activeSlide.footnote}</span>
-            <nav className="hero-carousel-dots" aria-label="Selecionar destaque">{heroSlides.map((slide, index) => <button type="button" className={`hero-carousel-dot ${index === activeHeroSlide ? 'is-active' : ''}`} key={slide.id} onClick={() => setActiveHeroSlide(index)} aria-label={`Exibir destaque ${index + 1}: ${slide.navigationLabel}`} aria-current={index === activeHeroSlide ? 'true' : undefined} />)}</nav>
+            <span>{String(activeHeroSlide + 1).padStart(2, '0')} — {String(slides.length).padStart(2, '0')}</span><div className="hero-bottom-line" /><span>{activeSlide.footnote}</span>
+            <nav className="hero-carousel-dots" aria-label="Selecionar destaque">{slides.map((slide, index) => <button type="button" className={`hero-carousel-dot ${index === activeHeroSlide ? 'is-active' : ''}`} key={slide.id} onClick={() => setActiveHeroSlide(index)} aria-label={`Exibir destaque ${index + 1}: ${slide.navigationLabel}`} aria-current={index === activeHeroSlide ? 'true' : undefined} />)}</nav>
           </div>
-          <p className="screen-reader-text" aria-live="polite">Destaque {activeHeroSlide + 1} de {heroSlides.length}: {activeSlide.navigationLabel}.</p>
+          <p className="screen-reader-text" aria-live="polite">Destaque {activeHeroSlide + 1} de {slides.length}: {activeSlide.navigationLabel}.</p>
         </div>
         <div className="hero-carousel-controls" aria-label="Controles do carrossel">
-          <button type="button" onClick={() => setActiveHeroSlide((current) => (current - 1 + heroSlides.length) % heroSlides.length)} aria-label="Mostrar destaque anterior"><ArrowLeft size={16} /></button>
-          <button type="button" onClick={() => setActiveHeroSlide((current) => (current + 1) % heroSlides.length)} aria-label="Mostrar próximo destaque"><ArrowRight size={16} /></button>
+          <button type="button" onClick={() => setActiveHeroSlide((current) => (current - 1 + slides.length) % slides.length)} aria-label="Mostrar destaque anterior"><ArrowLeft size={16} /></button>
+          <button type="button" onClick={() => setActiveHeroSlide((current) => (current + 1) % slides.length)} aria-label="Mostrar próximo destaque"><ArrowRight size={16} /></button>
           <button type="button" onClick={() => setCarouselPaused((value) => !value)} aria-label={carouselPaused ? 'Retomar rotação automática' : 'Pausar rotação automática'} aria-pressed={carouselPaused}>{carouselPaused ? <Play size={14} /> : <Pause size={14} />}</button>
         </div>
         <div className="hero-side-label"><span>IM PERSONNEL</span><span>{activeSlide.sideLabel}</span></div>
