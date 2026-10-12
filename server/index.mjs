@@ -287,6 +287,92 @@ function activeDateFilter() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 }
 
+// --- Prévia de links compartilhados (SEO e redes sociais) ----------------------
+// O HTML é montado no servidor porque robôs de WhatsApp, LinkedIn e Facebook não
+// executam JavaScript: sem isso toda vaga compartilhada vira o cartão da home.
+const SEO_BLOCK = /<!--seo:start-->[\s\S]*?<!--seo:end-->/;
+const escapeHtmlAttribute = (value) => String(value ?? '')
+  .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+  .replaceAll('"', '&quot;').replaceAll("'", '&#39;')
+  .replace(/\s+/g, ' ').trim();
+const siteOrigin = () => (process.env.SITE_URL || 'https://impersonnel.com.br').replace(/\/$/, '');
+const defaultShareImage = () => `${siteOrigin()}/images/hero-team.jpg`;
+
+function seoBlockFor(pathname) {
+  const origin = siteOrigin();
+  const title = 'IM Personnel | Pessoas certas transformam negócios';
+  const description = 'Recrutamento, seleção e soluções estratégicas em Recursos Humanos, com sede em Recife, Pernambuco.';
+  const canonical = `${origin}${pathname === '/' ? '/' : pathname.replace(/\/$/, '')}`;
+  let heading = title;
+  let summary = description;
+  let image = defaultShareImage();
+  let imageAlt = 'Equipe da IM Personnel em ambiente de trabalho';
+  let type = 'website';
+  let robots = 'index, follow';
+
+  const job = /^\/vagas\/([^/]+)$/.exec(pathname);
+  const article = /^\/conteudos\/([^/]+)$/.exec(pathname);
+  if (job) {
+    type = 'article';
+    const row = get('SELECT title, city, state, modality, employment_type, summary FROM jobs WHERE slug = ? AND published = 1 AND (expires_at IS NULL OR expires_at >= ?)', [asText(job[1], 110), activeDateFilter()]);
+    if (row) {
+      heading = `${row.title} em ${row.city}, ${row.state} | IM Personnel`;
+      summary = [row.summary, `${row.modality} · ${row.employment_type}`].filter(Boolean).join(' ');
+    } else {
+      robots = 'noindex, follow';
+    }
+  } else if (article) {
+    type = 'article';
+    const row = get('SELECT title, intro, category, image_key FROM articles WHERE slug = ? AND published = 1', [asText(article[1], 120)]);
+    if (row) {
+      heading = `${row.title} | IM Personnel`;
+      summary = row.intro;
+      if (row.image_key) { image = `${origin}/media/content-images/${encodeURIComponent(row.image_key)}`; imageAlt = row.title; }
+    } else {
+      robots = 'noindex, follow';
+    }
+  } else if (pathname === '/vagas') {
+    heading = 'Vagas abertas | IM Personnel';
+    const total = Number(get('SELECT COUNT(*) AS count FROM jobs WHERE published = 1 AND (expires_at IS NULL OR expires_at >= ?)', [activeDateFilter()])?.count || 0);
+    summary = total === 1
+      ? 'Uma oportunidade aberta agora. Recrutamento conduzido pela IM Personnel em Recife e região.'
+      : `${total} oportunidades abertas agora. Recrutamento conduzido pela IM Personnel em Recife e região.`;
+  } else if (pathname === '/conteudos') {
+    heading = 'Conteúdos | IM Personnel';
+    summary = 'Artigos sobre recrutamento, seleção, liderança e gestão de pessoas escritos pela equipe da IM Personnel.';
+  } else if (pathname === '/404' || pathname.startsWith('/admin') || pathname.startsWith('/configuracao-inicial')) {
+    robots = 'noindex, nofollow';
+  }
+
+  // O endereço com barra final e sem barra descrevem a mesma página: um só canônico.
+  return [
+    `<meta name="description" content="${escapeHtmlAttribute(summary)}" />`,
+    `<meta property="og:type" content="${type}" />`,
+    '<meta property="og:locale" content="pt_BR" />',
+    '<meta property="og:site_name" content="IM Personnel" />',
+    `<meta property="og:title" content="${escapeHtmlAttribute(heading)}" />`,
+    `<meta property="og:description" content="${escapeHtmlAttribute(summary)}" />`,
+    `<meta property="og:url" content="${escapeHtmlAttribute(canonical)}" />`,
+    `<meta property="og:image" content="${escapeHtmlAttribute(image)}" />`,
+    `<meta property="og:image:alt" content="${escapeHtmlAttribute(imageAlt)}" />`,
+    '<meta name="twitter:card" content="summary_large_image" />',
+    `<meta name="robots" content="${robots}" />`,
+    `<link rel="canonical" href="${escapeHtmlAttribute(canonical)}" />`,
+    `<title>${escapeHtmlAttribute(heading)}</title>`,
+  ].join('\n    ');
+}
+function injectSeo(html, pathname) {
+  return html.replace(SEO_BLOCK, `<!--seo:start-->\n    ${seoBlockFor(pathname)}\n    <!--seo:end-->`);
+}
+// O HTML de produção é lido uma vez e revalidado pela data de modificação do arquivo.
+let appShellCache = { html: '', mtimeMs: 0 };
+function appShellHtml() {
+  const shellPath = path.join(root, 'dist', 'index.html');
+  const { mtimeMs } = fs.statSync(shellPath);
+  if (appShellCache.mtimeMs !== mtimeMs) appShellCache = { html: fs.readFileSync(shellPath, 'utf-8'), mtimeMs };
+  return appShellCache.html;
+}
+
 // --- Saúde do envio de e-mail -------------------------------------------------
 // Toda tentativa de envio é registrada: sem isso uma senha de SMTP expirada faria o
 // candidato ficar sem confirmação e a equipe sem o aviso, sem ninguém perceber.
@@ -1221,10 +1307,11 @@ app.get('/sitemap.xml', (_req, res) => {
 
 if (isProduction) {
   const dist = path.join(root, 'dist');
-  app.use(express.static(dist, { etag: true, maxAge: '1h', setHeaders(res, file) {
-    if (file.endsWith('index.html')) res.setHeader('Cache-Control', 'no-cache');
-  } }));
-  app.get(/^(?!\/api\/).*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')));
+  // index: false deixa o HTML da aplicação com a rota do fim, que injeta as tags de compartilhamento.
+  app.use(express.static(dist, { index: false, etag: true, maxAge: '1h' }));
+  app.get(/^(?!\/api\/).*/, (req, res) => {
+    res.status(200).setHeader('Content-Type', 'text/html; charset=utf-8').setHeader('Cache-Control', 'public, max-age=0, must-revalidate').end(injectSeo(appShellHtml(), req.path));
+  });
 } else {
   const vite = await createViteServer({ configFile: path.join(root, 'vite.config.ts'), server: { middlewareMode: true, allowedHosts: ['.e2b.app', 'localhost', '127.0.0.1'], hmr: { host: undefined } }, appType: 'custom' });
   app.use(vite.middlewares);
@@ -1232,7 +1319,7 @@ if (isProduction) {
     try {
       const template = await fs.promises.readFile(path.join(root, 'index.html'), 'utf-8');
       const html = await vite.transformIndexHtml(req.originalUrl, template);
-      res.status(200).setHeader('Content-Type', 'text/html').end(html);
+      res.status(200).setHeader('Content-Type', 'text/html; charset=utf-8').end(injectSeo(html, req.path));
     } catch (error) { next(error); }
   });
 }

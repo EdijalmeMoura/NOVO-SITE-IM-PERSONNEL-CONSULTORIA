@@ -192,6 +192,35 @@ test('falha de envio de e-mail fica registrada e visível no painel', { timeout:
   assert.ok(keptHistory.recent_events.some((event) => event.status === 'failed'), 'o histórico permanece para consulta depois de desligar o SMTP');
 });
 
+test('vagas e conteúdos têm prévia própria para compartilhamento', { timeout: 30_000 }, async () => {
+  const job = await fetch(`${baseUrl}/vagas/vaga-de-teste`).then((response) => response.text());
+  assert.match(job, /<meta property="og:title" content="Vaga de teste em Recife, PE \| IM Personnel" \/>/, 'o cargo e a cidade aparecem na prévia');
+  assert.match(job, /<title>Vaga de teste em Recife, PE \| IM Personnel<\/title>/, 'o título do documento muda por rota');
+  assert.match(job, /<meta property="og:url" content="https:\/\/impersonnel\.com\.br\/vagas\/vaga-de-teste" \/>/);
+  assert.match(job, /<meta property="og:image" content="https:\/\/impersonnel\.com\.br\/images\/hero-team\.jpg" \/>/, 'a imagem da prévia é um endereço absoluto');
+  assert.match(job, /<link rel="canonical" href="https:\/\/impersonnel\.com\.br\/vagas\/vaga-de-teste" \/>/);
+  assert.doesNotMatch(job, /<meta name="robots" content="noindex/, 'vaga publicada continua indexável');
+
+  // O slug vem da própria API: os artigos revisados são carregados pelo servidor na primeira execução.
+  const published = await fetch(`${baseUrl}/api/articles`).then((response) => response.json());
+  const firstArticle = published.items[0];
+  const article = await fetch(`${baseUrl}/conteudos/${firstArticle.slug}`).then((response) => response.text());
+  assert.match(article, /<meta property="og:type" content="article" \/>/);
+  assert.ok(article.includes(`<title>${firstArticle.title} | IM Personnel</title>`), 'o título do artigo entra na prévia');
+  assert.match(article, /<meta property="og:image" content="https:\/\/impersonnel\.com\.br\/images\/hero-team\.jpg" \/>/, 'sem capa própria, o artigo usa a imagem padrão');
+
+  const missing = await fetch(`${baseUrl}/vagas/vaga-que-nao-existe`).then((response) => response.text());
+  assert.match(missing, /<meta name="robots" content="noindex, follow" \/>/, 'página de vaga inexistente não é indexada');
+
+  const admin = await fetch(`${baseUrl}/admin/dashboard`).then((response) => response.text());
+  assert.match(admin, /<meta name="robots" content="noindex, nofollow" \/>/, 'o painel nunca é indexado');
+  assert.match(admin, /<title>IM Personnel/, 'o painel mantém o título da marca');
+
+  const home = await fetch(`${baseUrl}/`).then((response) => response.text());
+  assert.match(home, /<link rel="canonical" href="https:\/\/impersonnel\.com\.br\/" \/>/);
+  assert.ok(home.includes('id="root"'), 'o HTML entregue continua sendo o da aplicação');
+});
+
 async function waitForEvent(templateKey, status) {
   const deadline = Date.now() + 12_000;
   let events = [];

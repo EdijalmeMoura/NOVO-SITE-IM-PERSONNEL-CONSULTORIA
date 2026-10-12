@@ -4,6 +4,7 @@ import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { apiAdminForm, apiDelete, apiGet, apiPost, apiPut, formatDate, setCsrfToken, type AdminSession, type AdminUser, type Job } from '../lib/api';
 import { Logo } from '../components/Logo';
 import { CollectionFooter, CollectionSearch, useAdminCollection } from '../components/AdminCollection';
+import { formatBytes, optimizeImage } from '../lib/image';
 import type { HeroSlide, Insight } from '../data';
 
 const menu = [
@@ -212,6 +213,7 @@ function ContentEditor({ article, onClose, onSaved }: { article: AdminArticle | 
   const [image, setImage] = useState<File | null>(null);
   const [removeImage, setRemoveImage] = useState(false);
   const [previewUrl, setPreviewUrl] = useState('');
+  const [optimizing, setOptimizing] = useState(false); const [optimization, setOptimization] = useState('');
   const imageInputRef = useRef<HTMLInputElement>(null);
   const currentImage = article?.image_url || '';
   const preview = previewUrl || (removeImage ? '' : currentImage);
@@ -221,26 +223,33 @@ function ContentEditor({ article, onClose, onSaved }: { article: AdminArticle | 
     setPreviewUrl(url);
     return () => URL.revokeObjectURL(url);
   }, [image]);
-  function chooseImage(next: File | null) {
-    setError('');
-    if (next) {
-      if (!['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(next.type)) { setImage(null); if (imageInputRef.current) imageInputRef.current.value = ''; setError('Use uma imagem JPG, PNG, WebP ou AVIF.'); return; }
-      if (next.size > 5 * 1024 * 1024) { setImage(null); if (imageInputRef.current) imageInputRef.current.value = ''; setError('A imagem deve ter no máximo 5 MB.'); return; }
-    }
+  async function chooseImage(next: File | null) {
+    setError(''); setOptimization('');
+    if (!next) { setImage(null); setRemoveImage(false); return; }
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(next.type)) { setImage(null); if (imageInputRef.current) imageInputRef.current.value = ''; setError('Use uma imagem JPG, PNG, WebP ou AVIF.'); return; }
+    if (next.size > 5 * 1024 * 1024) { setImage(null); if (imageInputRef.current) imageInputRef.current.value = ''; setError('A imagem deve ter no máximo 5 MB.'); return; }
     setImage(next); setRemoveImage(false);
+    // A imagem é reduzida no navegador: o arquivo enviado já sai leve para o site.
+    setOptimizing(true);
+    const result = await optimizeImage(next);
+    setOptimizing(false);
+    setImage(result.file);
+    if (result.optimized) setOptimization(`Imagem otimizada de ${formatBytes(result.originalBytes)} para ${formatBytes(result.bytes)}.`);
   }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setError('');
+    if (optimizing) { setError('Aguarde a otimização da imagem terminar.'); return; }
     const form = new FormData(event.currentTarget);
     form.set('published', form.get('published') === 'on' ? 'true' : 'false');
     form.set('remove_image', removeImage && !image ? 'true' : 'false');
-    if (!image) form.delete('image');
+    // O input ainda guarda o arquivo original: aqui entra a versão reduzida no navegador.
+    if (image) form.set('image', image, image.name); else form.delete('image');
     setBusy(true);
     try { if (article) await apiAdminForm(`/api/admin/articles/${article.id}`, form, 'PUT'); else await apiAdminForm('/api/admin/articles', form); onSaved(); }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível salvar o conteúdo.'); }
     finally { setBusy(false); }
   }
-  return <div className="admin-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="admin-job-modal content-editor-modal" role="dialog" aria-modal="true" aria-labelledby="article-modal-title"><div className="admin-modal-head"><div><span className="eyebrow">GESTÃO EDITORIAL</span><h2 id="article-modal-title">{article ? 'Editar conteúdo' : 'Novo conteúdo'}</h2></div><button type="button" onClick={onClose} aria-label="Fechar"><X size={20} /></button></div><form className="admin-editor-form" onSubmit={submit} noValidate><div className="form-grid"><label className="field-full"><span>Título <i>*</i></span><input name="title" defaultValue={article?.title || ''} required maxLength={180} /></label><label><span>Categoria <i>*</i></span><input name="category" defaultValue={article?.category || ''} required maxLength={100} placeholder="Ex.: Liderança" /></label><label><span>Endereço amigável (slug)</span><input name="slug" defaultValue={article?.slug || ''} maxLength={100} placeholder="Gerado a partir do título se vazio" /></label><label className="field-full"><span>Resumo <i>*</i></span><textarea name="intro" rows={3} defaultValue={article?.intro || ''} maxLength={900} required /></label><div className="field-full admin-image-field"><span className="admin-image-field-title">Imagem de capa <small>Opcional · JPG, PNG, WebP ou AVIF · até 5 MB</small></span><div className="admin-image-picker"><div className="admin-image-preview">{preview ? <img src={preview} alt="Pré-visualização da imagem de capa" /> : <span className="admin-image-placeholder"><ImagePlus size={20} /><small>Sem imagem</small></span>}</div><div className="admin-image-controls"><label className="upload-zone upload-zone-compact" htmlFor="article-image" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); chooseImage(event.dataTransfer.files?.[0] || null); }}><input ref={imageInputRef} type="file" id="article-image" name="image" accept="image/jpeg,image/png,image/webp,image/avif" onChange={(event) => chooseImage(event.target.files?.[0] || null)} /><span className="upload-icon"><ImagePlus size={18} /></span><span className="upload-copy"><strong>{image ? image.name : preview ? 'Substituir imagem' : 'Enviar imagem'}</strong><small>{image ? `${(image.size / 1024 / 1024).toFixed(2)} MB · Clique para trocar` : 'Proporção recomendada 16:9'}</small></span></label><label className="field-full"><span>Texto alternativo <small>Descreva a imagem para leitores de tela e para busca</small></span><input name="image_alt" defaultValue={article?.image_alt || ''} maxLength={300} placeholder="Ex.: Equipe em reunião de alinhamento" /></label>{(currentImage || image) && <button type="button" className="admin-delete-link" onClick={() => { const next = !(removeImage && !image); setRemoveImage(next); setImage(null); if (imageInputRef.current) imageInputRef.current.value = ''; }}>{removeImage && !image ? 'Manter imagem atual' : 'Remover imagem'} <Trash2 size={14} /></button>}</div></div></div><label><span>Tempo de leitura (minutos)</span><input name="minutes" type="number" min={1} max={30} defaultValue={article?.minutes || 4} /></label><label className="field-full"><span>Texto do artigo <i>*</i> <small>Separe os parágrafos com uma linha em branco.</small></span><textarea name="body" rows={12} defaultValue={article?.body.join('\n\n') || ''} required /></label><div className="admin-toggle-row field-full"><label><input type="checkbox" name="published" defaultChecked={article?.published || false} /><span><strong>Publicar conteúdo</strong><small>O artigo fica disponível no site quando esta opção está ativa.</small></span></label></div></div>{error && <div className="form-error" role="alert">{error}</div>}<div className="admin-modal-actions"><button type="button" className="button button-outline" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={busy}>{busy ? 'Salvando…' : article ? 'Salvar alterações' : 'Criar conteúdo'} <Check size={15} /></button></div></form></section></div>;
+  return <div className="admin-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="admin-job-modal content-editor-modal" role="dialog" aria-modal="true" aria-labelledby="article-modal-title"><div className="admin-modal-head"><div><span className="eyebrow">GESTÃO EDITORIAL</span><h2 id="article-modal-title">{article ? 'Editar conteúdo' : 'Novo conteúdo'}</h2></div><button type="button" onClick={onClose} aria-label="Fechar"><X size={20} /></button></div><form className="admin-editor-form" onSubmit={submit} noValidate><div className="form-grid"><label className="field-full"><span>Título <i>*</i></span><input name="title" defaultValue={article?.title || ''} required maxLength={180} /></label><label><span>Categoria <i>*</i></span><input name="category" defaultValue={article?.category || ''} required maxLength={100} placeholder="Ex.: Liderança" /></label><label><span>Endereço amigável (slug)</span><input name="slug" defaultValue={article?.slug || ''} maxLength={100} placeholder="Gerado a partir do título se vazio" /></label><label className="field-full"><span>Resumo <i>*</i></span><textarea name="intro" rows={3} defaultValue={article?.intro || ''} maxLength={900} required /></label><div className="field-full admin-image-field"><span className="admin-image-field-title">Imagem de capa <small>Opcional · JPG, PNG, WebP ou AVIF · até 5 MB</small></span><div className="admin-image-picker"><div className="admin-image-preview">{preview ? <img src={preview} alt="Pré-visualização da imagem de capa" /> : <span className="admin-image-placeholder"><ImagePlus size={20} /><small>Sem imagem</small></span>}</div><div className="admin-image-controls"><label className="upload-zone upload-zone-compact" htmlFor="article-image" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void chooseImage(event.dataTransfer.files?.[0] || null); }}><input ref={imageInputRef} type="file" id="article-image" name="image" accept="image/jpeg,image/png,image/webp,image/avif" onChange={(event) => void chooseImage(event.target.files?.[0] || null)} /><span className="upload-icon"><ImagePlus size={18} /></span><span className="upload-copy"><strong>{optimizing ? 'Otimizando imagem…' : image ? image.name : preview ? 'Substituir imagem' : 'Enviar imagem'}</strong><small>{optimizing ? 'Reduzindo o arquivo antes de enviar' : image ? `${formatBytes(image.size)} · Clique para trocar` : 'Proporção recomendada 16:9'}</small></span></label><label className="field-full"><span>Texto alternativo <small>Descreva a imagem para leitores de tela e para busca</small></span><input name="image_alt" defaultValue={article?.image_alt || ''} maxLength={300} placeholder="Ex.: Equipe em reunião de alinhamento" /></label>{optimization && <p className="admin-image-note">{optimization}</p>}{(currentImage || image) && <button type="button" className="admin-delete-link" onClick={() => { const next = !(removeImage && !image); setRemoveImage(next); setImage(null); if (imageInputRef.current) imageInputRef.current.value = ''; }}>{removeImage && !image ? 'Manter imagem atual' : 'Remover imagem'} <Trash2 size={14} /></button>}</div></div></div><label><span>Tempo de leitura (minutos)</span><input name="minutes" type="number" min={1} max={30} defaultValue={article?.minutes || 4} /></label><label className="field-full"><span>Texto do artigo <i>*</i> <small>Separe os parágrafos com uma linha em branco.</small></span><textarea name="body" rows={12} defaultValue={article?.body.join('\n\n') || ''} required /></label><div className="admin-toggle-row field-full"><label><input type="checkbox" name="published" defaultChecked={article?.published || false} /><span><strong>Publicar conteúdo</strong><small>O artigo fica disponível no site quando esta opção está ativa.</small></span></label></div></div>{error && <div className="form-error" role="alert">{error}</div>}<div className="admin-modal-actions"><button type="button" className="button button-outline" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={busy}>{busy ? 'Salvando…' : article ? 'Salvar alterações' : 'Criar conteúdo'} <Check size={15} /></button></div></form></section></div>;
 }
 
 function UsersView({ items, currentUserId, onCreate, onEdit, onRefresh }: { items: AdminUser[]; currentUserId: string; onCreate: () => void; onEdit: (user: AdminUser) => void; onRefresh: () => void }) {
@@ -320,6 +329,7 @@ function SlideEditor({ slide, onClose, onSaved }: { slide: AdminSlide | null; on
   const [image, setImage] = useState<File | null>(null);
   const [removeImage, setRemoveImage] = useState(false);
   const [previewUrl, setPreviewUrl] = useState('');
+  const [optimizing, setOptimizing] = useState(false); const [optimization, setOptimization] = useState('');
   const imageInputRef = useRef<HTMLInputElement>(null);
   const currentImage = slide?.imageKey && slide?.imageUrl ? slide.imageUrl : '';
   const preview = previewUrl || (removeImage ? '' : currentImage);
@@ -329,20 +339,27 @@ function SlideEditor({ slide, onClose, onSaved }: { slide: AdminSlide | null; on
     setPreviewUrl(url);
     return () => URL.revokeObjectURL(url);
   }, [image]);
-  function chooseImage(next: File | null) {
-    setError('');
-    if (next) {
-      if (!['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(next.type)) { setImage(null); if (imageInputRef.current) imageInputRef.current.value = ''; setError('Use uma imagem JPG, PNG, WebP ou AVIF.'); return; }
-      if (next.size > 5 * 1024 * 1024) { setImage(null); if (imageInputRef.current) imageInputRef.current.value = ''; setError('A imagem deve ter no máximo 5 MB.'); return; }
-    }
+  async function chooseImage(next: File | null) {
+    setError(''); setOptimization('');
+    if (!next) { setImage(null); setRemoveImage(false); return; }
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(next.type)) { setImage(null); if (imageInputRef.current) imageInputRef.current.value = ''; setError('Use uma imagem JPG, PNG, WebP ou AVIF.'); return; }
+    if (next.size > 5 * 1024 * 1024) { setImage(null); if (imageInputRef.current) imageInputRef.current.value = ''; setError('A imagem deve ter no máximo 5 MB.'); return; }
     setImage(next); setRemoveImage(false);
+    // A imagem é reduzida no navegador: o arquivo enviado já sai leve para o site.
+    setOptimizing(true);
+    const result = await optimizeImage(next);
+    setOptimizing(false);
+    setImage(result.file);
+    if (result.optimized) setOptimization(`Imagem otimizada de ${formatBytes(result.originalBytes)} para ${formatBytes(result.bytes)}.`);
   }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setError('');
+    if (optimizing) { setError('Aguarde a otimização da imagem terminar.'); return; }
     const form = new FormData(event.currentTarget);
     form.set('active', form.get('active') === 'on' ? 'true' : 'false');
     form.set('remove_image', removeImage && !image ? 'true' : 'false');
-    if (!image) form.delete('image');
+    // O input ainda guarda o arquivo original: aqui entra a versão reduzida no navegador.
+    if (image) form.set('image', image, image.name); else form.delete('image');
     setBusy(true);
     try { if (slide) await apiAdminForm(`/api/admin/hero-slides/${slide.id}`, form, 'PUT'); else await apiAdminForm('/api/admin/hero-slides', form); onSaved(); }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível salvar o slide.'); }
@@ -362,7 +379,7 @@ function SlideEditor({ slide, onClose, onSaved }: { slide: AdminSlide | null; on
     <label><span>Botão secundário: texto</span><input name="secondary_label" defaultValue={slide?.secondary?.label || ''} maxLength={80} placeholder="Ex.: Explore oportunidades" /></label>
     <label><span>Botão secundário: destino</span><input name="secondary_to" defaultValue={slide?.secondary?.to || ''} maxLength={300} placeholder="/vagas" /></label>
     <label className="field-full"><span>Rodapé do slide</span><input name="footnote" defaultValue={slide?.footnote || ''} maxLength={200} placeholder="Ex.: Pessoas no centro. Negócios em movimento." /></label>
-    <div className="field-full admin-image-field"><span className="admin-image-field-title">Imagem de fundo <small>Opcional · JPG, PNG, WebP ou AVIF até 5 MB · sem envio, usa a imagem padrão do site</small></span><div className="admin-image-picker"><div className="admin-image-preview hero-image-preview">{preview ? <img src={preview} alt="Pré-visualização da imagem do slide" /> : <span className="admin-image-placeholder"><ImagePlus size={20} /><small>Sem imagem própria</small></span>}</div><div className="admin-image-controls"><label className="upload-zone upload-zone-compact" htmlFor="slide-image" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); chooseImage(event.dataTransfer.files?.[0] || null); }}><input ref={imageInputRef} type="file" id="slide-image" name="image" accept="image/jpeg,image/png,image/webp,image/avif" onChange={(event) => chooseImage(event.target.files?.[0] || null)} /><span className="upload-icon"><ImagePlus size={18} /></span><span className="upload-copy"><strong>{image ? image.name : preview ? 'Substituir imagem' : 'Enviar imagem'}</strong><small>{image ? `${(image.size / 1024 / 1024).toFixed(2)} MB · Clique para trocar` : 'Imagem larga, proporção recomendada 16:9'}</small></span></label><label><span>Texto alternativo <small>Obrigatório para acessibilidade</small></span><input name="image_alt" defaultValue={slide?.imageAlt || ''} maxLength={300} placeholder="Descreva a cena da imagem" /></label><label><span>Posição de foco <small>Ex.: center 52% ou 42% 52%</small></span><input name="image_position" defaultValue={slide?.imagePosition || 'center 52%'} maxLength={40} /></label>{(currentImage || image) && <button type="button" className="admin-delete-link" onClick={() => { const next = !(removeImage && !image); setRemoveImage(next); setImage(null); if (imageInputRef.current) imageInputRef.current.value = ''; }}>{removeImage && !image ? 'Manter imagem atual' : 'Remover imagem e voltar à padrão'} <Trash2 size={14} /></button>}</div></div></div>
+    <div className="field-full admin-image-field"><span className="admin-image-field-title">Imagem de fundo <small>Opcional · JPG, PNG, WebP ou AVIF até 5 MB · sem envio, usa a imagem padrão do site</small></span><div className="admin-image-picker"><div className="admin-image-preview hero-image-preview">{preview ? <img src={preview} alt="Pré-visualização da imagem do slide" /> : <span className="admin-image-placeholder"><ImagePlus size={20} /><small>Sem imagem própria</small></span>}</div><div className="admin-image-controls"><label className="upload-zone upload-zone-compact" htmlFor="slide-image" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void chooseImage(event.dataTransfer.files?.[0] || null); }}><input ref={imageInputRef} type="file" id="slide-image" name="image" accept="image/jpeg,image/png,image/webp,image/avif" onChange={(event) => void chooseImage(event.target.files?.[0] || null)} /><span className="upload-icon"><ImagePlus size={18} /></span><span className="upload-copy"><strong>{optimizing ? 'Otimizando imagem…' : image ? image.name : preview ? 'Substituir imagem' : 'Enviar imagem'}</strong><small>{optimizing ? 'Reduzindo o arquivo antes de enviar' : image ? `${formatBytes(image.size)} · Clique para trocar` : 'Imagem larga, proporção recomendada 16:9'}</small></span></label>{optimization && <p className="admin-image-note">{optimization}</p>}<label><span>Texto alternativo <small>Obrigatório para acessibilidade</small></span><input name="image_alt" defaultValue={slide?.imageAlt || ''} maxLength={300} placeholder="Descreva a cena da imagem" /></label><label><span>Posição de foco <small>Ex.: center 52% ou 42% 52%</small></span><input name="image_position" defaultValue={slide?.imagePosition || 'center 52%'} maxLength={40} /></label>{(currentImage || image) && <button type="button" className="admin-delete-link" onClick={() => { const next = !(removeImage && !image); setRemoveImage(next); setImage(null); if (imageInputRef.current) imageInputRef.current.value = ''; }}>{removeImage && !image ? 'Manter imagem atual' : 'Remover imagem e voltar à padrão'} <Trash2 size={14} /></button>}</div></div></div>
     <div className="admin-toggle-row field-full"><label><input type="checkbox" name="active" defaultChecked={slide ? slide.active : true} /><span><strong>Exibir este slide no site</strong><small>Slides desativados ficam guardados no painel, fora do carrossel.</small></span></label></div>
   </div>{error && <div className="form-error" role="alert">{error}</div>}<div className="admin-modal-actions"><button type="button" className="button button-outline" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={busy}>{busy ? 'Salvando…' : slide ? 'Salvar alterações' : 'Criar slide'} <Check size={16} /></button></div></form></section></div>;
 }

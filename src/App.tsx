@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, type ReactNode } from 'react';
 import { BrowserRouter, Link, Route, Routes, useLocation } from 'react-router-dom';
 import { SiteHeader } from './components/SiteHeader';
 import { SiteFooter } from './components/SiteFooter';
@@ -14,7 +14,8 @@ import { TalentBank } from './pages/TalentBank';
 import { Contact } from './pages/Contact';
 import { Insights, InsightDetail } from './pages/Insights';
 import { CookiesPage, PrivacyPage } from './pages/Legal';
-import { AdminPanel } from './pages/Admin';
+// O painel inteiro só é baixado por quem entra em /admin: o visitante do site não paga esse peso.
+const AdminPanel = lazy(() => import('./pages/Admin').then((module) => ({ default: module.AdminPanel })));
 import { InitialSetup } from './pages/InitialSetup';
 import { usePageMeta } from './hooks/usePageMeta';
 
@@ -32,7 +33,7 @@ function NotFound() {
 }
 function RouteTree() {
   return <><ScrollToTop /><Routes>
-    <Route path="/admin/*" element={<AdminPanel />} />
+    <Route path="/admin/*" element={<Suspense fallback={<main className="admin-checking"><span className="loading-spinner" />Carregando o painel…</main>}><AdminPanel /></Suspense>} />
     <Route path="/configuracao-inicial" element={<PublicLayout><InitialSetup /></PublicLayout>} />
     <Route path="/" element={<PublicLayout><Home /></PublicLayout>} />
     <Route path="/sobre" element={<PublicLayout><About /></PublicLayout>} />

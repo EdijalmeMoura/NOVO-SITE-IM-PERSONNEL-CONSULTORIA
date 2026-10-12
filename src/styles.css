@@ -1471,3 +1471,6 @@ img { max-width: 100%; }
 @media (max-width: 900px) {
   .admin-collection-footer { flex-direction: column; align-items: stretch; }
 }
+
+/* Otimização da imagem no navegador */
+.admin-image-note { display: flex; align-items: center; gap: 6px; margin: 6px 0 0; padding: 6px 9px; border-left: 2px solid #6f8f75; border-radius: 4px; color: #556b59; background: #f4f8f4; font-size: 9px; }
