@@ -13,6 +13,8 @@ import { hashPassword, verifyPassword } from './auth.mjs';
 import { ensureBootstrapAdmin } from './bootstrap.mjs';
 import { emailSettings, isEmailConfigured, readTemplate, renderTemplate, resetMailer, sendMessage, sendTemplate, verifyTransport } from './mailer.mjs';
 import { buildZip, folderEntries } from './backup.mjs';
+import { encryptionAvailable, isProtectedSecret, protectSecret, revealSecret } from './secrets.mjs';
+import { generateRecoveryCodes, generateTotpSecret, otpauthUri, recoveryCodeHash, verifyTotp } from './totp.mjs';
 import insightDefaults from '../content/insights.json' with { type: 'json' };
 import heroSlideDefaults from '../content/hero-slides.json' with { type: 'json' };
 import emailTemplateDefaults from '../content/email-templates.json' with { type: 'json' };
@@ -78,6 +80,18 @@ const safeJsonArray = (value) => {
 };
 const slugify = (value) => asText(value, 90).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
 const reference = (id) => `IM-${id.replaceAll('-', '').slice(0, 8).toUpperCase()}`;
+// Instalações anteriores gravavam a senha do SMTP em texto puro. Com APP_SECRET
+// disponível, ela é reescrita protegida na primeira inicialização.
+function encryptStoredSecrets() {
+  try {
+    const stored = String(get("SELECT value FROM settings WHERE key = 'SMTP_PASS'")?.value ?? '');
+    if (!stored || isProtectedSecret(stored) || !encryptionAvailable()) return;
+    setSetting('SMTP_PASS', protectSecret(stored));
+    persistDatabase();
+    console.log('Senha do SMTP que estava em texto puro passou a ser protegida com APP_SECRET.');
+  } catch (error) { console.warn('Não foi possível proteger a senha do SMTP guardada.', error?.message || error); }
+}
+
 function purgeExpiredData() {
   const retentionTargets = [
     ['applications', 'APPLICATION_RETENTION_DAYS', true],
@@ -133,6 +147,7 @@ if (Number(get('SELECT COUNT(*) AS count FROM email_templates')?.count || 0) ===
 const bootstrapResult = ensureBootstrapAdmin();
 if (bootstrapResult === 'created') console.log('Administrador inicial criado a partir de ADMIN_BOOTSTRAP_EMAIL.');
 if (bootstrapResult === 'updated') console.log('Senha do administrador inicial atualizada a partir de ADMIN_BOOTSTRAP_PASSWORD_HASH.');
+encryptStoredSecrets();
 purgeExpiredData();
 const retentionTimer = setInterval(() => {
   try { purgeExpiredData(); }
@@ -164,12 +179,20 @@ app.use(helmet({
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false, limit: '64kb' }));
 
-const createFormLimiter = () => rateLimit({ windowMs: 15 * 60 * 1000, limit: 6, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Muitas tentativas em pouco tempo. Aguarde alguns minutos e tente novamente.' } });
+// Os limites valem por IP a cada 15 minutos. FORM_RATE_LIMIT e LOGIN_RATE_LIMIT existem
+// para a operação ajustar o rigor e para as suítes automatizadas não esbarrarem entre si.
+function rateLimitFromEnv(name, fallback, max = 10_000) {
+  const value = Number.parseInt(process.env[name] || '', 10);
+  return Number.isFinite(value) && value > 0 && value <= max ? value : fallback;
+}
+const formLimit = rateLimitFromEnv('FORM_RATE_LIMIT', 6);
+const loginLimit = rateLimitFromEnv('LOGIN_RATE_LIMIT', 8);
+const createFormLimiter = () => rateLimit({ windowMs: 15 * 60 * 1000, limit: formLimit, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Muitas tentativas em pouco tempo. Aguarde alguns minutos e tente novamente.' } });
 const applicationLimiter = createFormLimiter();
 const talentLimiter = createFormLimiter();
 const leadLimiter = createFormLimiter();
 const privacyLimiter = createFormLimiter();
-const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 8, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Muitas tentativas de acesso. Aguarde alguns minutos e tente novamente.' } });
+const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: loginLimit, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Muitas tentativas de acesso. Aguarde alguns minutos e tente novamente.' } });
 const initialAdminLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 4, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Muitas tentativas de configuração em pouco tempo. Aguarde alguns minutos e tente novamente.' } });
 const upload = multer({
   storage: multer.diskStorage({
@@ -443,7 +466,7 @@ function articleToPublic(row) {
 }
 function adminUserToPublic(row) {
   if (!row) return null;
-  return { id: row.id, email: row.email, name: row.name || '', active: Boolean(Number(row.active)), created_at: row.created_at, updated_at: row.updated_at || '', last_login_at: row.last_login_at || '' };
+  return { id: row.id, email: row.email, name: row.name || '', active: Boolean(Number(row.active)), totp_enabled: Boolean(Number(row.totp_enabled ?? 0)), created_at: row.created_at, updated_at: row.updated_at || '', last_login_at: row.last_login_at || '' };
 }
 const DEFAULT_HERO_IMAGE = '/images/hero-team.jpg';
 const templateVariables = new Map(emailTemplateDefaults.map((template) => [template.key, template.variables || []]));
@@ -781,21 +804,146 @@ app.get('/api/admin/session', (req, res) => {
   res.json({ authenticated: true, csrf: session.csrf, user: { email: session.email, name: session.name || '' } });
 });
 
-app.post('/api/admin/login', loginLimiter, (req, res) => {
-  const email = asEmail(req.body?.email);
-  const password = typeof req.body?.password === 'string' ? req.body.password : '';
-  const user = get('SELECT id, email, name, salt, password_hash, active FROM admin_users WHERE email = ?', [email]);
-  const passwordOkay = user ? verifyPassword(password, user.salt, user.password_hash) : false;
-  if (!user || !passwordOkay) return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
-  if (!Number(user.active)) return res.status(403).json({ error: 'Esta conta administrativa está desativada. Procure quem gerencia os acessos do painel.' });
+// Desafios de segundo fator ficam só na memória e valem por cinco minutos.
+const mfaChallenges = new Map();
+const MFA_CHALLENGE_TTL = 5 * 60 * 1000;
+
+function openSession(res, user) {
   const key = crypto.randomBytes(32).toString('hex');
   const csrf = crypto.randomBytes(24).toString('hex');
-  const session = { userId: user.id, email: user.email, name: user.name || '', csrf, expiresAt: Date.now() + 12 * 60 * 60 * 1000 };
-  sessions.set(key, session);
+  sessions.set(key, { userId: user.id, email: user.email, name: user.name || '', csrf, expiresAt: Date.now() + 12 * 60 * 60 * 1000 });
   run('UPDATE admin_users SET last_login_at = ? WHERE id = ?', [nowIso(), user.id]);
   persistDatabase();
   res.cookie('im_admin', key, { httpOnly: true, secure: isProduction, sameSite: 'strict', path: '/', maxAge: 12 * 60 * 60 * 1000 });
-  res.json({ authenticated: true, csrf, user: { email: user.email, name: user.name || '' } });
+  return { authenticated: true, csrf, user: { email: user.email, name: user.name || '' } };
+}
+
+app.post('/api/admin/login', loginLimiter, (req, res) => {
+  const email = asEmail(req.body?.email);
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  const user = get('SELECT id, email, name, salt, password_hash, active, totp_enabled FROM admin_users WHERE email = ?', [email]);
+  const passwordOkay = user ? verifyPassword(password, user.salt, user.password_hash) : false;
+  if (!user || !passwordOkay) return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
+  if (!Number(user.active)) return res.status(403).json({ error: 'Esta conta administrativa está desativada. Procure quem gerencia os acessos do painel.' });
+  // Com a verificação em duas etapas ativa, a senha sozinha não abre sessão.
+  if (Number(user.totp_enabled)) {
+    const challenge = crypto.randomBytes(24).toString('hex');
+    mfaChallenges.set(challenge, { userId: user.id, expiresAt: Date.now() + MFA_CHALLENGE_TTL });
+    console.log(`Segundo fator solicitado para ${user.email}.`);
+    return res.json({ authenticated: false, totp_required: true, challenge, expires_in: Math.round(MFA_CHALLENGE_TTL / 1000) });
+  }
+  res.json(openSession(res, user));
+});
+
+app.post('/api/admin/login/totp', loginLimiter, (req, res) => {
+  const challenge = asText(req.body?.challenge, 64);
+  const pending = mfaChallenges.get(challenge);
+  if (!pending || pending.expiresAt < Date.now()) {
+    mfaChallenges.delete(challenge);
+    return res.status(401).json({ error: 'Esta verificação expirou. Entre novamente com e-mail e senha.' });
+  }
+  const user = get('SELECT id, email, name, active, totp_secret, recovery_codes FROM admin_users WHERE id = ?', [pending.userId]);
+  if (!user || !Number(user.active)) {
+    mfaChallenges.delete(challenge);
+    return res.status(403).json({ error: 'Esta conta administrativa está desativada. Procure quem gerencia os acessos do painel.' });
+  }
+  const secret = revealSecret(user.totp_secret);
+  const supplied = asText(req.body?.code, 20);
+  if (verifyTotp(secret, supplied)) {
+    mfaChallenges.delete(challenge);
+    run('INSERT INTO audit_log (id, actor_email, action, entity_type, entity_id, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [uuid(), user.email, 'admin.mfa_verified', 'admin_user', user.id, JSON.stringify({ method: 'app' }), nowIso()]);
+    persistDatabase();
+    return res.json(openSession(res, user));
+  }
+  // O código de recuperação substitui o aplicativo quando o celular não está à mão.
+  const codes = parseRecoveryCodes(user.recovery_codes);
+  const hash = recoveryCodeHash(supplied);
+  if (codes.includes(hash)) {
+    const remaining = codes.filter((item) => item !== hash);
+    run('UPDATE admin_users SET recovery_codes = ?, updated_at = ? WHERE id = ?', [JSON.stringify(remaining), nowIso(), user.id]);
+    mfaChallenges.delete(challenge);
+    run('INSERT INTO audit_log (id, actor_email, action, entity_type, entity_id, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [uuid(), user.email, 'admin.mfa_verified', 'admin_user', user.id, JSON.stringify({ method: 'recovery_code', remaining: remaining.length }), nowIso()]);
+    persistDatabase();
+    const result = openSession(res, user);
+    console.log(`Código de recuperação usado por ${user.email}. Restam ${remaining.length}.`);
+    return res.json({ ...result, recovery_codes_left: remaining.length });
+  }
+  run('INSERT INTO audit_log (id, actor_email, action, entity_type, entity_id, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [uuid(), user.email, 'admin.mfa_failed', 'admin_user', user.id, '{}', nowIso()]);
+  persistDatabase();
+  res.status(401).json({ error: 'Código inválido. Confira o aplicativo autenticador e tente novamente.' });
+});
+
+// --- Segundo fator da própria conta --------------------------------------------
+function parseRecoveryCodes(raw) {
+  try {
+    const parsed = JSON.parse(raw || '[]');
+    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === 'string') : [];
+  } catch { return []; }
+}
+function securityState(userId) {
+  const row = get('SELECT email, totp_secret, totp_enabled, totp_confirmed_at, recovery_codes FROM admin_users WHERE id = ?', [userId]);
+  if (!row) return null;
+  const secret = revealSecret(row.totp_secret);
+  return {
+    totp_enabled: Boolean(Number(row.totp_enabled)),
+    totp_confirmed_at: row.totp_confirmed_at || '',
+    secret_ready: Boolean(secret),
+    encryption_available: encryptionAvailable(),
+    recovery_codes_left: parseRecoveryCodes(row.recovery_codes).length,
+    email: row.email,
+  };
+}
+app.get('/api/admin/security', requireAdmin, (req, res) => {
+  const state = securityState(req.adminSession.userId);
+  if (!state) return res.status(404).json({ error: 'Conta administrativa não encontrada.' });
+  res.json(state);
+});
+app.post('/api/admin/security/totp/setup', requireAdmin, requireCsrf, (req, res) => {
+  const user = get('SELECT id, email, totp_enabled FROM admin_users WHERE id = ?', [req.adminSession.userId]);
+  if (!user) return res.status(404).json({ error: 'Conta administrativa não encontrada.' });
+  if (Number(user.totp_enabled)) return res.status(409).json({ error: 'A verificação em duas etapas já está ativa nesta conta.' });
+  const secret = generateTotpSecret();
+  run('UPDATE admin_users SET totp_secret = ?, totp_confirmed_at = ?, updated_at = ? WHERE id = ?', [protectSecret(secret), '', nowIso(), user.id]);
+  persistDatabase();
+  audit(req, 'admin.mfa_setup_started', 'admin_user', user.id, { email: user.email });
+  res.json({ secret, uri: otpauthUri({ secret, email: user.email }), digits: 6, period: 30 });
+});
+app.post('/api/admin/security/totp/enable', requireAdmin, requireCsrf, (req, res) => {
+  const user = get('SELECT id, email, totp_secret, totp_enabled FROM admin_users WHERE id = ?', [req.adminSession.userId]);
+  if (!user) return res.status(404).json({ error: 'Conta administrativa não encontrada.' });
+  if (Number(user.totp_enabled)) return res.status(409).json({ error: 'A verificação em duas etapas já está ativa nesta conta.' });
+  const secret = revealSecret(user.totp_secret);
+  if (!secret) return res.status(400).json({ error: 'Gere um novo código antes de confirmar a ativação.' });
+  if (!verifyTotp(secret, asText(req.body?.code, 20))) return res.status(400).json({ error: 'Código incorreto. Confira o que aparece no aplicativo autenticador.' });
+  const recoveryCodes = generateRecoveryCodes();
+  run('UPDATE admin_users SET totp_enabled = 1, totp_confirmed_at = ?, recovery_codes = ?, updated_at = ? WHERE id = ?', [nowIso(), JSON.stringify(recoveryCodes.map(recoveryCodeHash)), nowIso(), user.id]);
+  persistDatabase();
+  audit(req, 'admin.mfa_enabled', 'admin_user', user.id, { email: user.email });
+  res.json({ ok: true, recovery_codes: recoveryCodes, state: securityState(user.id) });
+});
+app.post('/api/admin/security/totp/disable', requireAdmin, requireCsrf, (req, res) => {
+  const user = get('SELECT id, email, salt, password_hash, totp_enabled FROM admin_users WHERE id = ?', [req.adminSession.userId]);
+  if (!user) return res.status(404).json({ error: 'Conta administrativa não encontrada.' });
+  if (!verifyPassword(typeof req.body?.password === 'string' ? req.body.password : '', user.salt, user.password_hash)) {
+    return res.status(403).json({ error: 'Senha incorreta. A verificação em duas etapas continua ativa.' });
+  }
+  run('UPDATE admin_users SET totp_enabled = 0, totp_secret = ?, totp_confirmed_at = ?, recovery_codes = ?, updated_at = ? WHERE id = ?', ['', '', '[]', nowIso(), user.id]);
+  persistDatabase();
+  audit(req, 'admin.mfa_disabled', 'admin_user', user.id, { email: user.email });
+  res.json({ ok: true, state: securityState(user.id) });
+});
+app.post('/api/admin/security/recovery-codes', requireAdmin, requireCsrf, (req, res) => {
+  const user = get('SELECT id, email, salt, password_hash, totp_enabled FROM admin_users WHERE id = ?', [req.adminSession.userId]);
+  if (!user) return res.status(404).json({ error: 'Conta administrativa não encontrada.' });
+  if (!Number(user.totp_enabled)) return res.status(409).json({ error: 'Ative a verificação em duas etapas antes de gerar códigos de recuperação.' });
+  if (!verifyPassword(typeof req.body?.password === 'string' ? req.body.password : '', user.salt, user.password_hash)) {
+    return res.status(403).json({ error: 'Senha incorreta. Os códigos atuais continuam valendo.' });
+  }
+  const recoveryCodes = generateRecoveryCodes();
+  run('UPDATE admin_users SET recovery_codes = ?, updated_at = ? WHERE id = ?', [JSON.stringify(recoveryCodes.map(recoveryCodeHash)), nowIso(), user.id]);
+  persistDatabase();
+  audit(req, 'admin.mfa_recovery_codes_regenerated', 'admin_user', user.id, { email: user.email, total: recoveryCodes.length });
+  res.json({ ok: true, recovery_codes: recoveryCodes, state: securityState(user.id) });
 });
 
 app.post('/api/admin/logout', requireAdmin, requireCsrf, (req, res) => {
@@ -1034,7 +1182,7 @@ app.put('/api/admin/privacy-requests/:id', requireAdmin, requireCsrf, (req, res)
   audit(req, 'privacy_request.updated', 'privacy_request', existing.id, { status });
   res.json({ ok: true });
 });
-const adminUserColumns = 'id, email, name, active, created_at, updated_at, last_login_at';
+const adminUserColumns = 'id, email, name, active, totp_enabled, created_at, updated_at, last_login_at';
 app.get('/api/admin/users', requireAdmin, (req, res) => {
   const users = all(`SELECT ${adminUserColumns} FROM admin_users ORDER BY active DESC, created_at ASC`).map(adminUserToPublic);
   res.json({ items: users, current_user_id: req.adminSession.userId });
@@ -1349,10 +1497,14 @@ app.get('/api/admin/email-settings', requireAdmin, (_req, res) => {
   const storedInPanel = all('SELECT key, value FROM settings')
     .filter((row) => row.key in EMAIL_SETTING_LIMITS && String(row.value ?? '').trim() !== '')
     .map((row) => row.key);
+  // A senha guardada pode estar protegida (ok), em texto puro (versão anterior) ou
+  // ilegível (APP_SECRET ausente ou trocado). O painel precisa distinguir os casos.
+  const storedPass = String(get("SELECT value FROM settings WHERE key = 'SMTP_PASS'")?.value ?? '');
   res.json({
     SMTP_HOST: settings.host, SMTP_PORT: settings.port, SMTP_SECURE: settings.secure, SMTP_USER: settings.user,
-    SMTP_PASS_SET: Boolean(settings.pass), EMAIL_FROM: settings.from, LEADS_NOTIFICATION_EMAIL: settings.notification,
+    SMTP_PASS_SET: Boolean(storedPass.trim()), EMAIL_FROM: settings.from, LEADS_NOTIFICATION_EMAIL: settings.notification,
     configured: isEmailConfigured(), stored_in_panel: storedInPanel,
+    secrets_protected: isProtectedSecret(storedPass), encryption_available: encryptionAvailable(), pass_readable: Boolean(settings.pass),
     health: emailHealth(),
     recent_events: all('SELECT id, template_key, kind, recipient, status, detail, created_at FROM email_events ORDER BY created_at DESC LIMIT 25'),
     templates: all('SELECT key, label, audience, subject, body, enabled, updated_at FROM email_templates ORDER BY rowid ASC').map((row) => ({ ...row, enabled: Boolean(Number(row.enabled)), variables: templateVariables.get(row.key) || [] })),
@@ -1373,7 +1525,8 @@ app.put('/api/admin/email-settings', requireAdmin, requireCsrf, (req, res) => {
     if (key === 'SMTP_SECURE') value = asBoolean(value) ? 'true' : 'false';
     if (key === 'EMAIL_FROM' && value && !/^[^@\s]+@[^@\s]+$/.test(value.replace(/^[^<]*<([^>]*)>$/, '$1'))) return res.status(400).json({ error: 'Informe um remetente válido, como IM Personnel <contato@dominio.com.br>.' });
     if (key === 'LEADS_NOTIFICATION_EMAIL' && value && !validEmail(value)) return res.status(400).json({ error: 'Informe um e-mail válido para receber os avisos da equipe.' });
-    setSetting(key, value);
+    // A senha do SMTP sai do painel protegida, com a chave derivada de APP_SECRET.
+    setSetting(key, key === 'SMTP_PASS' ? protectSecret(value) : value);
     // A senha nunca volta em resposta nem entra na trilha de auditoria.
     changes[key] = key === 'SMTP_PASS' ? (value ? 'definida' : 'removida') : value;
   }
@@ -1383,11 +1536,12 @@ app.put('/api/admin/email-settings', requireAdmin, requireCsrf, (req, res) => {
   audit(req, 'email_settings.updated', 'settings', 'email', changes);
   // Devolve o mesmo retrato do GET (sem os modelos) para o painel atualizar sem nova consulta.
   const updated = emailSettings();
+  const savedPass = String(get("SELECT value FROM settings WHERE key = 'SMTP_PASS'")?.value ?? '');
   res.json({
     ok: true,
     SMTP_HOST: updated.host, SMTP_PORT: updated.port, SMTP_SECURE: updated.secure, SMTP_USER: updated.user,
-    SMTP_PASS_SET: Boolean(updated.pass), EMAIL_FROM: updated.from, LEADS_NOTIFICATION_EMAIL: updated.notification,
-    configured: isEmailConfigured(),
+    SMTP_PASS_SET: Boolean(savedPass.trim()), EMAIL_FROM: updated.from, LEADS_NOTIFICATION_EMAIL: updated.notification,
+    configured: isEmailConfigured(), secrets_protected: isProtectedSecret(savedPass), encryption_available: encryptionAvailable(), pass_readable: Boolean(updated.pass),
     stored_in_panel: all('SELECT key, value FROM settings')
       .filter((row) => row.key in EMAIL_SETTING_LIMITS && String(row.value ?? '').trim() !== '')
       .map((row) => row.key),

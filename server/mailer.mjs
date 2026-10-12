@@ -1,5 +1,6 @@
 import nodemailer from 'nodemailer';
 import { get } from './db.mjs';
+import { revealSecret } from './secrets.mjs';
 
 let transporter;
 let transporterSignature = '';
@@ -20,7 +21,8 @@ export function emailSettings() {
     port: Number(setting('SMTP_PORT', process.env.SMTP_PORT) || 587),
     secure: setting('SMTP_SECURE', process.env.SMTP_SECURE) === 'true',
     user: setting('SMTP_USER', process.env.SMTP_USER),
-    pass: setting('SMTP_PASS', process.env.SMTP_PASS),
+    // A senha do painel fica protegida na base; a variável de ambiente continua em texto puro.
+    pass: revealSecret(setting('SMTP_PASS', process.env.SMTP_PASS)),
     from: setting('EMAIL_FROM', process.env.EMAIL_FROM),
     notification: setting('LEADS_NOTIFICATION_EMAIL', process.env.LEADS_NOTIFICATION_EMAIL),
   };

@@ -29,8 +29,8 @@ export type Job = {
   updated_at: string;
 };
 
-export type AdminSession = { authenticated: boolean; csrf?: string; user?: { email: string; name?: string } };
-export type AdminUser = { id: string; email: string; name: string; active: boolean; created_at: string; updated_at: string; last_login_at: string };
+export type AdminSession = { authenticated: boolean; csrf?: string; user?: { email: string; name?: string }; totp_required?: boolean; challenge?: string; expires_in?: number; recovery_codes_left?: number };
+export type AdminUser = { id: string; email: string; name: string; active: boolean; totp_enabled?: boolean; created_at: string; updated_at: string; last_login_at: string };
 let csrfToken = '';
 export const setCsrfToken = (value: string) => { csrfToken = value; };
 

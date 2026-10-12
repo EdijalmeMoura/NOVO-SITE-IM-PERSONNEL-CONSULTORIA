@@ -214,6 +214,10 @@ export async function initializeDatabase() {
     ['admin_users', 'active', 'INTEGER NOT NULL DEFAULT 1'],
     ['admin_users', 'updated_at', "TEXT NOT NULL DEFAULT ''"],
     ['admin_users', 'last_login_at', "TEXT NOT NULL DEFAULT ''"],
+    ['admin_users', 'totp_secret', "TEXT NOT NULL DEFAULT ''"],
+    ['admin_users', 'totp_enabled', 'INTEGER NOT NULL DEFAULT 0'],
+    ['admin_users', 'totp_confirmed_at', "TEXT NOT NULL DEFAULT ''"],
+    ['admin_users', 'recovery_codes', "TEXT NOT NULL DEFAULT '[]'"],
   ]) {
     const statement = db.prepare(`PRAGMA table_info(${table})`);
     let present = false;

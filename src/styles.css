@@ -1487,3 +1487,29 @@ img { max-width: 100%; }
   .admin-export-link { width: 100%; justify-content: center; }
   .admin-backup-actions { flex-direction: column; }
 }
+
+/* Verificação em duas etapas */
+.login-mfa-help { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 14px; }
+.login-mfa-help .text-link { padding: 0; border: 0; background: none; cursor: pointer; }
+.admin-security-sections { display: flex; flex-direction: column; gap: 12px; }
+.admin-security-copy { margin: 0; color: #6f6f6f; font-size: 10px; line-height: 1.75; }
+.admin-security-facts { display: grid; gap: 1px; border: 1px solid #e9e9e9; border-radius: 6px; background: #e9e9e9; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+.admin-security-facts > span { display: block; padding: 11px 13px; background: #ffffff; }
+.admin-security-facts small { display: block; color: #909090; font-size: 8px; letter-spacing: .06em; text-transform: uppercase; }
+.admin-security-facts strong { display: block; margin-top: 4px; color: #3f3f3f; font-size: 11px; }
+.admin-security-forms { display: grid; gap: 12px; }
+.admin-inline-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
+.admin-inline-form label { flex: 1 1 220px; display: flex; flex-direction: column; gap: 5px; }
+.admin-inline-form label > span { color: #6f6f6f; font-size: 9px; font-weight: 700; }
+.admin-inline-form input { min-height: 36px; padding: 0 10px; border: 1px solid #e2e2e2; border-radius: 5px; font-size: 11px; }
+.admin-security-steps { margin: 0; padding-left: 17px; color: #6f6f6f; font-size: 10px; line-height: 1.9; }
+.admin-secret-box { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 11px 13px; border: 1px dashed #d8d8d8; border-radius: 6px; background: #fbfbfb; }
+.admin-secret-box code { flex: 1 1 auto; color: #2f2f2f; font-size: 14px; font-weight: 700; letter-spacing: .16em; word-break: break-all; }
+.admin-copy-button { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 0 11px; border: 1px solid #e0e0e0; border-radius: 5px; color: #4a4a4a; background: #ffffff; font-size: 9px; font-weight: 700; cursor: pointer; }
+.admin-copy-button:hover { border-color: #cfcfcf; background: #f6f6f6; }
+.admin-recovery-codes { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+.admin-recovery-codes code { padding: 9px 11px; border: 1px solid #e6e6e6; border-radius: 5px; background: #fbfbfb; color: #3f3f3f; font-size: 11px; letter-spacing: .08em; text-align: center; }
+.admin-recovery-card .admin-security-copy { margin-bottom: 12px; }
+@media (max-width: 900px) {
+  .admin-inline-form { flex-direction: column; align-items: stretch; }
+}

@@ -17,7 +17,14 @@ Site institucional responsivo em português brasileiro para a IM Personnel, com 
 - **Notificações por e-mail no painel**: menu *Notificações* para configurar o servidor SMTP (host, porta, SSL/TLS, usuário, senha, remetente e caixa da equipe), testar a conexão com um envio real e revisar assunto e corpo de cada mensagem disparada pelos formulários, com variáveis como `{{nome}}`, `{{vaga}}` e `{{protocolo}}`.
 - Páginas de privacidade e preferências de cookies, sitemap dinâmico e `robots.txt`.
 - E-mail transacional opcional por SMTP. O que for salvo no painel tem prioridade sobre as variáveis de ambiente. Os formulários continuam registrando os dados mesmo sem SMTP configurado, e o dashboard avisa quando o SMTP ou a caixa de notificações estão desligados.
-- Teste automatizado de integração para os principais fluxos do portal e do painel.
+- **Saúde da entrega de e-mail**: cada tentativa de envio fica registrada e o dashboard avisa quando o último envio falhou, mostrando o erro do provedor — sem isso uma senha de SMTP expirada deixaria o candidato sem confirmação e a equipe sem o aviso, sem ninguém perceber.
+- **Listas administrativas paginadas com busca no servidor**: candidaturas, banco de talentos, leads, pedidos de privacidade e auditoria informam o total real, mostram "exibindo X de Y" e permitem carregar o restante — a busca encontra registros antigos que não cabem na primeira página.
+- **Exportação em CSV e backup completo**: cada lista baixa o que está filtrado na tela (ponto e vírgula, BOM e acentos preservados, prontos para o Excel em português) e o dashboard entrega um ZIP com a base, os currículos e as imagens, com instruções de restauração. Toda exportação e todo backup entram na auditoria.
+- **Verificação em duas etapas (TOTP)** para a conta administrativa, com aplicativos como Google Authenticator, Authy e 1Password, mais códigos de recuperação de uso único.
+- **Segredos protegidos**: a senha do SMTP gravada pelo painel fica cifrada (AES-256-GCM) no arquivo do banco quando `APP_SECRET` está definido.
+- **Prévia correta ao compartilhar**: o HTML de vagas e conteúdos é montado no servidor com título, descrição, endereço canônico e imagem absoluta, para o cartão sair certo no WhatsApp, LinkedIn e Facebook.
+- **Imagens leves**: as fotos escolhidas no painel são reduzidas no próprio navegador (maior lado até 1920 px, WebP) antes do envio, e o painel informa a economia obtida.
+- Testes automatizados de integração para os fluxos do portal, do painel, da operação, da exportação e da segurança (20 casos, com integração contínua em `.github/workflows/ci.yml`).
 
 **Não há vagas, clientes, depoimentos, resultados, certificações, telefones ou endereço físico inventados.** O portal começa sem oportunidades até que uma vaga real seja cadastrada. O endereço informado no site limita-se a Recife, Pernambuco, conforme o escopo recebido. WhatsApp só aparece se um número oficial for configurado.
 
@@ -123,7 +130,9 @@ O menu **Notificações** faz o mesmo papel das variáveis acima, sem redeploy: 
 | Remetente | Aceita `Nome <endereco@dominio.com.br>`. Junto com o host, é o que torna o envio ativo. |
 | Caixa que recebe os avisos da equipe | Equivale a `LEADS_NOTIFICATION_EMAIL` e é o destino padrão do botão **Testar conexão**. |
 
-A senha é gravada na base e nunca é devolvida pela API nem escrita na trilha de auditoria (o histórico registra apenas `definida`/`removida`). **Isso significa texto puro dentro do arquivo SQLite**, no mesmo volume dos currículos: proteja o disco, restrinja o acesso aos backups e prefira uma credencial exclusiva para envio. Se o volume for acessível a outras equipes, mantenha a senha como secret do ambiente em vez de digitá-la no painel.
+A senha é gravada na base e nunca é devolvida pela API nem escrita na trilha de auditoria (o histórico registra apenas `definida`/`removida`). **Com `APP_SECRET` definido no ambiente ela fica cifrada (AES-256-GCM) dentro do arquivo SQLite**; sem a chave, o painel avisa que o valor está em texto puro. Mesmo cifrada, ela vive no mesmo volume dos currículos: proteja o disco, restrinja o acesso aos backups e prefira uma credencial exclusiva para envio. O passo a passo está em [Proteger a senha do SMTP em repouso](#proteger-a-senha-do-smtp-em-repouso).
+
+O painel mostra ainda a **saúde da entrega**: último envio confirmado, falhas nas últimas 24 horas, motivo resumido da última falha (com a senha mascarada) e o histórico dos 25 envios mais recentes, com o resultado de cada um. É por ali que se percebe uma credencial expirada antes que a equipe reclame de não receber avisos.
 
 Cada mensagem disparada pelos formulários tem um modelo editável (assunto, corpo e liga/desliga). As variáveis entre chaves duplas são substituídas a cada envio, o botão **Ver prévia** mostra o resultado com dados de exemplo e o servidor recusa variáveis que não existem naquele modelo.
 
@@ -150,6 +159,35 @@ O menu **Página inicial** edita o carrossel de abertura. A instalação carrega
 
 O conteúdo público é servido por `GET /api/hero-slides`, consultado pelo site a cada visita.
 
+### Proteger o acesso ao painel
+
+Quem entra no painel vê currículos, telefones e observações internas. O menu **Segurança** ativa a verificação em duas etapas na sua conta:
+
+1. Clique em **Começar a ativação**: o painel mostra uma chave em base32.
+2. No aplicativo autenticador (Google Authenticator, Authy, 1Password, Microsoft Authenticator), adicione uma conta e digite a chave — ou cole o endereço `otpauth://` quando o aplicativo aceitar.
+3. Confirme com o código de seis dígitos exibido. **Guarde os oito códigos de recuperação** que aparecem em seguida: eles são mostrados uma única vez e cada um entra no lugar do aplicativo uma só vez.
+
+Depois disso, o login pede senha e código. Desativar a proteção ou gerar novos códigos exige confirmar a senha atual. Ativar, desativar, verificar, falhar e usar um código de recuperação — tudo entra na auditoria.
+
+Se alguém perder o celular e os códigos, o caminho é o terminal do servidor:
+
+```bash
+npm run admin:hash          # gera um hash novo para a senha
+# depois atualize a conta na base e entre para reconfigurar o 2FA
+```
+
+Mantenha a conta de maior privilégio com 2FA ativo e crie contas individuais: contas compartilhadas anulam o valor da auditoria.
+
+### Proteger a senha do SMTP em repouso
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+Guarde o resultado como `APP_SECRET` no ambiente. Com a chave definida, a senha gravada pelo painel é cifrada com AES-256-GCM no arquivo do banco; a primeira inicialização também regrava em forma protegida qualquer senha que tenha ficado em texto puro. Sem `APP_SECRET`, o painel avisa que a senha está exposta e o valor continua sendo gravado como veio.
+
+Duas consequências práticas: **não troque `APP_SECRET` sem digitar a senha de novo** (valores antigos deixam de ser legíveis e o envio para até a senha ser reconfigurada) e mantenha a chave fora do Git, junto com os demais segredos do ambiente.
+
 ### Testes
 
 ```bash
@@ -157,6 +195,12 @@ npm test
 ```
 
 O comando compila o frontend e executa servidores de teste isolados, cada um com base temporária própria. O fluxo principal (`test/flows.test.mjs`) cobre: ausência inicial de vagas fictícias; login e proteção CSRF; criação/publicação/expiração/duplicação de vagas; busca pública; candidatura; assinatura e privacidade do upload; atualização de status; cadastro e exclusão de perfil do banco de talentos; leads e solicitações de privacidade; CMS com upload, substituição, remoção e validação de assinatura da imagem de capa; criação, desativação, reativação e troca de senha de usuários administrativos (incluindo bloqueio de auto-desativação e derrubada de sessão aberta); sitemap; trilha de auditoria e logout.
+
+`test/operations.test.mjs` cobre a operação: paginação e busca no servidor, registro da falha de envio, exportação em CSV (BOM, separador, escape de aspas e filtro aplicado) e integridade do ZIP de backup.
+
+`test/security.test.mjs` cobre a segurança: vetores oficiais da RFC 6238, senha do SMTP cifrada no arquivo do banco e nunca devolvida, ativação do 2FA, recusa de código inválido, consumo único do código de recuperação, exigência de senha para desativar e proteção das rotas.
+
+O repositório roda `npm ci` e `npm test` a cada push e pull request pelo GitHub Actions (`.github/workflows/ci.yml`).
 
 `test/site-settings.test.mjs` cobre as duas áreas configuráveis pelo painel: slides da página inicial (seis destaques de fábrica, edição de textos e imagem com upload, reordenação, desativação com efeito no endpoint público, recusa de destino externo e de título vazio, remoção da imagem junto com o slide e proteção do último slide) e notificações (SMTP salvo com prioridade sobre o ambiente, senha nunca devolvida nem auditada, validação de porta e remetente, modelos com variável desconhecida recusada, prévia renderizada e trilha de auditoria). Os demais arquivos verificam a instalação inicial e a criação do administrador sem Shell.
 
@@ -170,6 +214,8 @@ As variáveis estão documentadas em `.env.example`:
 - `VITE_WHATSAPP_NUMBER`: número oficial no formato internacional, somente dígitos.
 - `LEADS_NOTIFICATION_EMAIL`: caixa corporativa para notificações.
 - `SMTP_*` e `EMAIL_FROM`: configuração de e-mail transacional.
+- `APP_SECRET`: chave de 32 bytes em hexadecimal que cifra a senha do SMTP gravada pelo painel. Sem ela, o painel avisa que a senha está em texto puro no arquivo do banco.
+- `FORM_RATE_LIMIT` e `LOGIN_RATE_LIMIT`: opcionais, ajustam os limites por IP a cada 15 minutos (padrões 6 e 8).
 - `APPLICATION_RETENTION_DAYS`, `TALENT_RETENTION_DAYS`, `LEAD_RETENTION_DAYS`, `PRIVACY_REQUEST_RETENTION_DAYS` e `AUDIT_RETENTION_DAYS`: prazos em dias definidos pela IM Personnel.
 
 **O servidor recusa inicialização com `NODE_ENV=production` se algum prazo de retenção estiver ausente ou inválido.** Os valores devem ser definidos e aprovados pela pessoa responsável por privacidade, não copiados sem análise. A rotina de descarte remove registros vencidos e currículos associados na inicialização e uma vez ao dia. Pedidos de exclusão/retirada de autorização também podem ser encaminhados manualmente no painel.
@@ -205,13 +251,17 @@ O servidor escuta em `0.0.0.0` e usa `PORT` (padrão 5173). Configure um proxy r
 - Sessões são mantidas em memória e terminam ao reiniciar o processo. Operação prevista em uma instância. Para múltiplas instâncias, substitua por store de sessão compartilhado e banco transacional central.
 - Currículos ficam em `DATA_DIR/private-resumes`, fora de `public/` e acessíveis somente por endpoint administrativo autenticado. O servidor limita uploads a 5 MB e aceita apenas PDF/DOCX. Proteja também o volume do servidor, use criptografia de disco em produção e restrinja os backups.
 - Imagens de conteúdo ficam em `DATA_DIR/content-images` e são públicas por natureza (servidas em `/media/content-images/{chave}`). O nome do arquivo é sempre um UUID gerado no servidor com extensão fixa, a chave é validada por expressão regular antes de qualquer acesso a disco e a assinatura do arquivo é conferida no envio, o que impede traversal e upload de não-imagens.
-- O banco não cifra cada campo individualmente. Use armazenamento de produção com criptografia em repouso, controles de acesso e política de backup/rotação.
+- O banco não cifra cada campo individualmente: apenas a senha do SMTP recebe proteção própria (AES-256-GCM com chave derivada de `APP_SECRET`). Os demais dados pessoais continuam dependendo de criptografia em repouso no volume, controles de acesso e política de backup/rotação.
+- A verificação em duas etapas cobre a conta administrativa (TOTP). Os códigos de recuperação são guardados como hash e consumidos no primeiro uso; o desafio intermediário do login vive em memória e expira em cinco minutos.
+- Os limites de tentativa são de 6 envios de formulário e 8 logins por IP a cada 15 minutos, ajustáveis por `FORM_RATE_LIMIT` e `LOGIN_RATE_LIMIT` quando a operação exigir.
 - Todas as contas administrativas têm acesso completo ao painel. A criação, a desativação/reativação e a troca de senha são feitas no painel em **Usuários** (ou pelo utilitário de terminal); gestão granular de papéis e permissões continua fora do escopo desta entrega, então crie acessos somente para pessoas autorizadas. O sistema impede desativar a própria conta em uso e mantém sempre ao menos uma conta ativa.
 - A área de candidato com conta, autenticação própria e recuperação de senha foi deixada opcional/desabilitada: a candidatura e o banco de talentos funcionam sem criar conta.
 
 ### Backup e recuperação
 
-Faça backup consistente do arquivo SQLite, de `private-resumes/` e de `content-images/` como um conjunto, com retenção e acesso restritos. Para uma cópia manual simples, pare o processo e copie ambos para armazenamento protegido. Na restauração, mantenha a relação entre os nomes aleatórios dos arquivos e as chaves da base; teste a restauração em ambiente separado antes de substituir produção. Documente responsável, frequência, criptografia, retenção e procedimento de recuperação para a operação real.
+O painel tem um botão de **backup completo** no dashboard: ele baixa um ZIP com a base SQLite, os currículos e as imagens, mais um `LEIA-ME.txt` com a contagem de registros por tabela e o passo a passo de restauração. Todo download entra na auditoria com data, usuário e conteúdo. As listas também exportam CSV com o filtro aplicado na tela — útil para planilhas e para atender pedidos de portabilidade.
+
+Para uma rotina automática, faça backup consistente do arquivo SQLite, de `private-resumes/` e de `content-images/` como um conjunto, com retenção e acesso restritos. Para uma cópia manual simples, pare o processo e copie ambos para armazenamento protegido. Na restauração, mantenha a relação entre os nomes aleatórios dos arquivos e as chaves da base; teste a restauração em ambiente separado antes de substituir produção. Documente responsável, frequência, criptografia, retenção e procedimento de recuperação para a operação real.
 
 ## Validações necessárias antes da publicação institucional
 

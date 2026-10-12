@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { Activity, ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, ArrowUpRight, Ban, BookOpenText, BriefcaseBusiness, Check, ChevronDown, CircleCheck, ClipboardList, Eye, FilePlus2, FileText, ImagePlus, LayoutDashboard, LockKeyhole, LogOut, Mail, MailWarning, Plus, Presentation, Search, Send, Shield, ShieldCheck, Trash2, UserCog, UsersRound, UserRoundSearch, X } from 'lucide-react';
+import { Activity, ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, ArrowUpRight, Ban, BookOpenText, BriefcaseBusiness, Check, ChevronDown, CircleCheck, ClipboardList, Copy, Eye, FilePlus2, FileText, ImagePlus, KeyRound, LayoutDashboard, LockKeyhole, LogOut, Mail, MailWarning, Plus, Presentation, Search, Send, Shield, ShieldCheck, Trash2, UserCog, UsersRound, UserRoundSearch, X } from 'lucide-react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { apiAdminForm, apiDelete, apiGet, apiPost, apiPut, formatDate, setCsrfToken, type AdminSession, type AdminUser, type Job } from '../lib/api';
 import { Logo } from '../components/Logo';
@@ -16,16 +16,18 @@ const menu = [
   { path: 'content', label: 'Conteúdos', icon: BookOpenText },
   { path: 'hero', label: 'Página inicial', icon: Presentation },
   { path: 'users', label: 'Usuários', icon: UserCog },
+  { path: 'security', label: 'Segurança', icon: KeyRound },
   { path: 'notifications', label: 'Notificações', icon: Mail },
   { path: 'privacy', label: 'Privacidade', icon: ShieldCheck },
   { path: 'audit', label: 'Auditoria', icon: Activity },
 ];
 type AdminArticle = Insight & { id: string; published: boolean; created_at: string; updated_at: string };
 type AdminSlide = HeroSlide & { id: string; accentLine: number | ''; imageKey: string; position: number; active: boolean; created_at: string; updated_at: string };
+type SecurityState = { totp_enabled: boolean; totp_confirmed_at: string; secret_ready: boolean; encryption_available: boolean; recovery_codes_left: number; email: string };
 type EmailTemplate = { key: string; label: string; audience: string; subject: string; body: string; enabled: boolean; updated_at: string; variables: string[] };
 type EmailHealth = { configured: boolean; notification_email: string; last_success_at: string; last_failure_at: string; last_error: string; last_error_template: string; failures_24h: number; attention: boolean };
 type EmailEvent = { id: string; template_key: string; kind: string; recipient: string; status: string; detail: string; created_at: string };
-type EmailSettings = { SMTP_HOST: string; SMTP_PORT: number; SMTP_SECURE: boolean; SMTP_USER: string; SMTP_PASS_SET: boolean; EMAIL_FROM: string; LEADS_NOTIFICATION_EMAIL: string; configured: boolean; stored_in_panel: string[]; health?: EmailHealth; recent_events?: EmailEvent[]; templates: EmailTemplate[] };
+type EmailSettings = { SMTP_HOST: string; SMTP_PORT: number; SMTP_SECURE: boolean; SMTP_USER: string; SMTP_PASS_SET: boolean; EMAIL_FROM: string; LEADS_NOTIFICATION_EMAIL: string; configured: boolean; stored_in_panel: string[]; secrets_protected?: boolean; encryption_available?: boolean; pass_readable?: boolean; health?: EmailHealth; recent_events?: EmailEvent[]; templates: EmailTemplate[] };
 
 const appStatuses = ['Candidatura recebida', 'Em análise', 'Em processo seletivo', 'Encerrada'];
 const leadStatuses = ['Novo contato', 'Em atendimento', 'Reunião agendada', 'Proposta enviada', 'Em negociação', 'Convertido', 'Não convertido'];
@@ -67,7 +69,7 @@ export function AdminPanel() {
     if (!session) return;
     let cancelled = false;
     // As listas paginadas (candidaturas, talentos, leads, privacidade e auditoria) buscam os próprios dados.
-    const endpoint: Record<string, string> = { dashboard: '/api/admin/dashboard', jobs: '/api/admin/jobs', content: '/api/admin/articles', hero: '/api/admin/hero-slides', users: '/api/admin/users', notifications: '/api/admin/email-settings' };
+    const endpoint: Record<string, string> = { dashboard: '/api/admin/dashboard', jobs: '/api/admin/jobs', content: '/api/admin/articles', hero: '/api/admin/hero-slides', users: '/api/admin/users', notifications: '/api/admin/email-settings', security: '/api/admin/security' };
     setLoading(true); setError('');
     apiGet<any>(endpoint[activeView] || endpoint.dashboard).then((data) => { if (!cancelled) setPayload(data); }).catch((reason: Error) => { if (!cancelled) { setError(reason.message); if (reason.message.includes('sessão')) { setSession(null); setCsrfToken(''); } } }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -91,6 +93,7 @@ export function AdminPanel() {
         {activeView === 'content' && <ContentView items={payload?.items || []} onCreate={() => { setEditingArticle(null); setContentEditorOpen(true); }} onEdit={(article) => { setEditingArticle(article); setContentEditorOpen(true); }} />}
         {activeView === 'hero' && <HeroSlidesView items={payload?.items || []} onCreate={() => { setEditingSlide(null); setSlideEditorOpen(true); }} onEdit={(slide) => { setEditingSlide(slide); setSlideEditorOpen(true); }} onRefresh={refresh} />}
         {activeView === 'users' && <UsersView items={payload?.items || []} currentUserId={payload?.current_user_id || ''} onCreate={() => { setEditingUser(null); setUserEditorOpen(true); }} onEdit={(user) => { setEditingUser(user); setUserEditorOpen(true); }} onRefresh={refresh} />}
+        {activeView === 'security' && <SecurityView />}
         {activeView === 'notifications' && <NotificationsView settings={payload as EmailSettings | null} onRefresh={refresh} />}
         {activeView === 'privacy' && <PrivacyRequestsView />}
         {activeView === 'audit' && <AuditView />}
@@ -105,13 +108,29 @@ export function AdminPanel() {
 
 function AdminLogin({ onAuthenticated }: { onAuthenticated: (session: { csrf: string; user: { email: string; name?: string } }) => void }) {
   const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
+  const [challenge, setChallenge] = useState(''); const [code, setCode] = useState(''); const [recoveryMode, setRecoveryMode] = useState(false);
+  function finish(response: AdminSession) {
+    if (response.authenticated && response.csrf && response.user) onAuthenticated({ csrf: response.csrf, user: response.user });
+    else setError('Não foi possível iniciar a sessão.');
+  }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setError(''); setBusy(true);
-    try { const response = await apiPost<AdminSession>('/api/admin/login', { email, password }); if (response.authenticated && response.csrf && response.user) onAuthenticated({ csrf: response.csrf, user: response.user }); else setError('Não foi possível iniciar a sessão.'); }
+    try {
+      const response = await apiPost<AdminSession>('/api/admin/login', { email, password });
+      // Conta com verificação em duas etapas: a senha abre apenas o desafio do código.
+      if (response.totp_required && response.challenge) { setChallenge(response.challenge); setCode(''); return; }
+      finish(response);
+    }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível entrar.'); }
     finally { setBusy(false); }
   }
-  return <main className="admin-login-page"><div className="login-decoration"><div className="login-orbit login-orbit-a" /><div className="login-orbit login-orbit-b" /><span className="login-watermark">IM</span><div className="login-editorial"><span className="eyebrow eyebrow-light">IM PERSONNEL / GESTÃO</span><h1>Decisões de pessoas,<br /><em>com clareza.</em></h1><p>Área administrativa reservada à equipe autorizada.</p></div><span className="login-copyright">RECIFE · PERNAMBUCO</span></div><section className="login-form-wrap"><div className="login-form-top"><Logo /><Link to="/" className="text-link">Voltar ao site <ArrowUpRight size={15} /></Link></div><div className="login-form-content"><span className="login-icon"><LockKeyhole size={21} /></span><span className="eyebrow">ACESSO SEGURO</span><h2>Entre no painel.</h2><p>Use as credenciais da sua conta administrativa.</p><form onSubmit={submit} noValidate><label><span>E-mail de acesso</span><input type="email" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} required placeholder="nome@empresa.com.br" /></label><label><span>Senha</span><input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required placeholder="Sua senha" /></label>{error && <div className="form-error" role="alert">{error}</div>}<button className="button button-primary login-submit" type="submit" disabled={busy}>{busy ? 'Validando acesso…' : 'Entrar no painel'} <ArrowUpRight size={16} /></button></form><div className="login-security-note"><Shield size={15} /><span>Acesso restrito. Todas as ações administrativas relevantes são registradas.</span></div><details className="admin-setup-help"><summary>Primeiro acesso?</summary><p>Crie a conta inicial pelo terminal com <code>npm run admin:create</code>. Consulte a documentação de instalação.</p></details></div></section></main>;
+  async function submitCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setError(''); setBusy(true);
+    try { finish(await apiPost<AdminSession>('/api/admin/login/totp', { challenge, code })); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível confirmar o código.'); }
+    finally { setBusy(false); }
+  }
+  return <main className="admin-login-page"><div className="login-decoration"><div className="login-orbit login-orbit-a" /><div className="login-orbit login-orbit-b" /><span className="login-watermark">IM</span><div className="login-editorial"><span className="eyebrow eyebrow-light">IM PERSONNEL / GESTÃO</span><h1>Decisões de pessoas,<br /><em>com clareza.</em></h1><p>Área administrativa reservada à equipe autorizada.</p></div><span className="login-copyright">RECIFE · PERNAMBUCO</span></div><section className="login-form-wrap"><div className="login-form-top"><Logo /><Link to="/" className="text-link">Voltar ao site <ArrowUpRight size={15} /></Link></div><div className="login-form-content"><span className="login-icon"><LockKeyhole size={21} /></span><span className="eyebrow">ACESSO SEGURO</span><h2>Entre no painel.</h2><p>{challenge ? 'Falta confirmar o código do seu aplicativo autenticador.' : 'Use as credenciais da sua conta administrativa.'}</p>{challenge ? <form onSubmit={submitCode} noValidate><label><span>{recoveryMode ? 'Código de recuperação' : 'Código de verificação'}</span><input inputMode={recoveryMode ? 'text' : 'numeric'} autoComplete="one-time-code" autoFocus value={code} onChange={(event) => setCode(event.target.value)} required placeholder={recoveryMode ? 'ABCDE-12345' : '000000'} /></label>{error && <div className="form-error" role="alert">{error}</div>}<button className="button button-primary login-submit" type="submit" disabled={busy}>{busy ? 'Confirmando…' : 'Confirmar e entrar'} <ArrowUpRight size={16} /></button><div className="login-mfa-help"><button type="button" className="text-link" onClick={() => { setRecoveryMode(!recoveryMode); setCode(''); setError(''); }}>{recoveryMode ? 'Usar o código do aplicativo' : 'Perdi o acesso ao aplicativo'}</button><button type="button" className="text-link" onClick={() => { setChallenge(''); setPassword(''); setCode(''); setRecoveryMode(false); setError(''); }}>Voltar ao início</button></div></form> : <form onSubmit={submit} noValidate><label><span>E-mail de acesso</span><input type="email" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} required placeholder="nome@empresa.com.br" /></label><label><span>Senha</span><input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required placeholder="Sua senha" /></label>{error && <div className="form-error" role="alert">{error}</div>}<button className="button button-primary login-submit" type="submit" disabled={busy}>{busy ? 'Validando acesso…' : 'Entrar no painel'} <ArrowUpRight size={16} /></button></form>}<div className="login-security-note"><Shield size={15} /><span>Acesso restrito. Todas as ações administrativas relevantes são registradas.</span></div><details className="admin-setup-help"><summary>Primeiro acesso?</summary><p>Crie a conta inicial pelo terminal com <code>npm run admin:create</code>. Consulte a documentação de instalação.</p></details></div></section></main>;
 }
 
 function DashboardView({ data }: { data: any }) {
@@ -270,7 +289,7 @@ function UsersView({ items, currentUserId, onCreate, onEdit, onRefresh }: { item
   }
   return <div className="admin-list-view"><div className="admin-page-intro"><div><span className="eyebrow">CONTROLE DE ACESSO</span><h2>Gerencie os usuários do painel.</h2><p>Crie contas administrativas e desative acessos que não devem mais entrar. Toda ação fica registrada em auditoria.</p></div><button className="button button-primary" type="button" onClick={onCreate}><Plus size={17} /> Novo usuário</button></div>{error && <div className="admin-alert" role="alert">{error}<button type="button" onClick={onRefresh}>Tentar novamente</button></div>}{feedback && <div className="admin-inline-feedback" role="status">{feedback}<button type="button" onClick={() => setFeedback('')}><X size={14} /></button></div>}
     <div className="admin-toolbar"><label className="admin-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar por nome ou e-mail" /></label><span>{activeCount} de {items.length} contas ativas</span></div>
-    {filtered.length ? <div className="admin-table-card"><div className="admin-table-wrap"><table className="admin-table admin-users-table"><thead><tr><th>Pessoa</th><th>E-mail</th><th>Criada em</th><th>Último acesso</th><th>Status</th><th>Ações</th></tr></thead><tbody>{filtered.map((user) => <tr key={user.id}><td><strong>{user.name || user.email.split('@')[0]}</strong><small>{user.id === currentUserId ? 'Sua conta' : user.name ? 'Usuário administrativo' : 'Nome não informado · edite para preencher'}</small></td><td>{user.email}</td><td>{formatDate(user.created_at)}</td><td>{user.last_login_at ? formatDate(user.last_login_at, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Nunca acessou'}</td><td><span className={`admin-status-pill ${user.active ? 'status-live' : 'status-draft'}`}>{user.active ? 'Ativo' : 'Desativado'}</span></td><td><div className="admin-row-actions"><button type="button" title="Editar usuário" onClick={() => onEdit(user)}><UserCog size={16} /></button><button type="button" className={user.active ? 'admin-row-danger' : ''} title={user.active ? 'Desativar acesso' : 'Reativar acesso'} aria-label={user.active ? `Desativar acesso de ${user.name || user.email}` : `Reativar acesso de ${user.name || user.email}`} disabled={busyId === user.id} onClick={() => toggleActive(user)}>{user.active ? <Ban size={16} /> : <CircleCheck size={16} />}</button></div></td></tr>)}</tbody></table></div></div> : <AdminEmpty icon={<UserCog size={21} />} title={items.length ? 'Nenhum usuário encontrado.' : 'Nenhum usuário cadastrado.'} text={items.length ? 'Tente outra busca.' : 'Crie uma conta administrativa para começar.'} />}
+    {filtered.length ? <div className="admin-table-card"><div className="admin-table-wrap"><table className="admin-table admin-users-table"><thead><tr><th>Pessoa</th><th>E-mail</th><th>Criada em</th><th>Último acesso</th><th>Status</th><th>Ações</th></tr></thead><tbody>{filtered.map((user) => <tr key={user.id}><td><strong>{user.name || user.email.split('@')[0]}</strong><small>{user.id === currentUserId ? 'Sua conta' : user.name ? 'Usuário administrativo' : 'Nome não informado · edite para preencher'}</small></td><td>{user.email}</td><td>{formatDate(user.created_at)}</td><td>{user.last_login_at ? formatDate(user.last_login_at, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Nunca acessou'}</td><td><span className={`admin-status-pill ${user.active ? 'status-live' : 'status-draft'}`}>{user.active ? 'Ativo' : 'Desativado'}</span>{user.totp_enabled && <span className="admin-status-pill status-ok">2FA</span>}</td><td><div className="admin-row-actions"><button type="button" title="Editar usuário" onClick={() => onEdit(user)}><UserCog size={16} /></button><button type="button" className={user.active ? 'admin-row-danger' : ''} title={user.active ? 'Desativar acesso' : 'Reativar acesso'} aria-label={user.active ? `Desativar acesso de ${user.name || user.email}` : `Reativar acesso de ${user.name || user.email}`} disabled={busyId === user.id} onClick={() => toggleActive(user)}>{user.active ? <Ban size={16} /> : <CircleCheck size={16} />}</button></div></td></tr>)}</tbody></table></div></div> : <AdminEmpty icon={<UserCog size={21} />} title={items.length ? 'Nenhum usuário encontrado.' : 'Nenhum usuário cadastrado.'} text={items.length ? 'Tente outra busca.' : 'Crie uma conta administrativa para começar.'} />}
     <div className="admin-privacy-reminder"><ShieldCheck size={16} /><span>Desativar corta o acesso na hora e preserva o histórico registrado. Para trocar a senha de alguém, edite a conta e defina uma nova senha.</span></div>
   </div>;
 }
@@ -385,6 +404,85 @@ function SlideEditor({ slide, onClose, onSaved }: { slide: AdminSlide | null; on
   </div>{error && <div className="form-error" role="alert">{error}</div>}<div className="admin-modal-actions"><button type="button" className="button button-outline" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={busy}>{busy ? 'Salvando…' : slide ? 'Salvar alterações' : 'Criar slide'} <Check size={16} /></button></div></form></section></div>;
 }
 
+function SecurityView() {
+  const [state, setState] = useState<SecurityState | null>(null);
+  const [error, setError] = useState(''); const [feedback, setFeedback] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [setup, setSetup] = useState<{ secret: string; uri: string } | null>(null);
+  const [code, setCode] = useState(''); const [password, setPassword] = useState('');
+  const [codes, setCodes] = useState<string[]>([]); const [copied, setCopied] = useState('');
+  useEffect(() => { apiGet<SecurityState>('/api/admin/security').then(setState).catch((reason: Error) => setError(reason.message)); }, []);
+  async function run(action: () => Promise<void>) {
+    setBusy(true); setError(''); setFeedback('');
+    try { await action(); } finally { setBusy(false); }
+  }
+  async function startSetup() { await run(async () => { const data = await apiPost<{ secret: string; uri: string }>('/api/admin/security/totp/setup', {}); setSetup(data); setCodes([]); }); }
+  async function enable(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await run(async () => {
+      try {
+        const data = await apiPost<{ recovery_codes: string[]; state: SecurityState }>('/api/admin/security/totp/enable', { code });
+        setCodes(data.recovery_codes); setState(data.state); setSetup(null); setCode('');
+        setFeedback('Verificação em duas etapas ativada. Guarde os códigos de recuperação agora: eles não são exibidos de novo.');
+      } catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível ativar.'); }
+    });
+  }
+  async function disable(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await run(async () => {
+      try {
+        const data = await apiPost<{ state: SecurityState }>('/api/admin/security/totp/disable', { password });
+        setState(data.state); setPassword(''); setCodes([]); setFeedback('Verificação em duas etapas desativada.');
+      } catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível desativar.'); }
+    });
+  }
+  async function regenerate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await run(async () => {
+      try {
+        const data = await apiPost<{ recovery_codes: string[]; state: SecurityState }>('/api/admin/security/recovery-codes', { password });
+        setCodes(data.recovery_codes); setState(data.state); setPassword('');
+        setFeedback('Novos códigos gerados. Os anteriores deixaram de funcionar.');
+      } catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível gerar os códigos.'); }
+    });
+  }
+  async function copy(value: string, tag: string) {
+    try { await navigator.clipboard.writeText(value); setCopied(tag); setTimeout(() => setCopied(''), 2500); }
+    catch { setError('Não foi possível copiar automaticamente. Selecione o texto e copie manualmente.'); }
+  }
+  if (!state) return <div className="admin-list-view">{error ? <div className="admin-alert" role="alert">{error}</div> : <div className="admin-loading"><span className="loading-spinner" />Carregando o estado de segurança…</div>}</div>;
+  const confirmed = state.totp_confirmed_at ? formatDate(state.totp_confirmed_at, { day: 'numeric', month: 'long', year: 'numeric' }) : '';
+  return <div className="admin-list-view"><div className="admin-page-intro"><div><span className="eyebrow">PROTEÇÃO DO ACESSO</span><h2>Segurança da sua conta.</h2><p>Quem entra no painel vê currículos, dados de contato e informações salariais de candidatos. A verificação em duas etapas soma um código do seu celular à senha.</p></div><span className={`admin-count-chip ${state.totp_enabled ? 'chip-live' : ''}`}>{state.totp_enabled ? '2FA ativo' : '2FA desativado'}</span></div>
+    {error && <div className="admin-alert" role="alert">{error}</div>}
+    {feedback && <div className="admin-notice" role="status"><ShieldCheck size={17} /><div><strong>{feedback}</strong></div></div>}
+    {!state.encryption_available && <div className="admin-notice admin-notice-warning" role="status"><MailWarning size={17} /><div><strong>APP_SECRET não está definido no ambiente.</strong><p>Sem essa chave, a senha do SMTP guardada pelo painel fica em texto puro no arquivo do banco. Defina APP_SECRET no ambiente de execução para protegê-la.</p></div></div>}
+    <section className="admin-panel-card"><div className="admin-card-heading"><div><span className="eyebrow">VERIFICAÇÃO EM DUAS ETAPAS</span><h3>{state.totp_enabled ? 'Ativa nesta conta' : 'Adicione um código do celular à senha'}</h3></div>{state.totp_enabled && <span className="admin-status-pill status-ok">Verificado</span>}</div>
+      {state.totp_enabled ? <div className="admin-security-sections">
+        <div className="admin-security-facts"><span><small>Ativada em</small><strong>{confirmed || '—'}</strong></span><span><small>Códigos de recuperação</small><strong>{state.recovery_codes_left} restantes</strong></span><span><small>Aplicativos aceitos</small><strong>Google, Authy, 1Password, Microsoft</strong></span></div>
+        <p className="admin-security-copy">Para entrar, além da senha, é pedido o código de seis dígitos do aplicativo. Se o celular não estiver à mão, use um código de recuperação — cada um funciona uma única vez.</p>
+        <div className="admin-security-forms">
+          <form className="admin-inline-form" onSubmit={regenerate}><label><span>Gerar novos códigos de recuperação</span><input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required placeholder="Confirme sua senha" /></label><button className="button button-outline button-small" type="submit" disabled={busy}>{busy ? 'Gerando…' : 'Gerar novos códigos'}</button></form>
+          <form className="admin-inline-form" onSubmit={disable}><label><span>Desativar a verificação em duas etapas</span><input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required placeholder="Confirme sua senha" /></label><button className="admin-delete-link" type="submit" disabled={busy}><Ban size={14} /> Desativar</button></form>
+        </div>
+      </div> : <div className="admin-security-sections">
+        {!setup ? <>
+          <p className="admin-security-copy">Você vai precisar de um aplicativo autenticador no celular. O processo leva um minuto: o painel mostra uma chave, você digita no aplicativo e confirma com o código gerado.</p>
+          <div className="admin-backup-actions"><button className="button button-primary button-small" type="button" disabled={busy} onClick={() => { void startSetup(); }}><KeyRound size={15} /> Começar a ativação</button></div>
+        </> : <>
+          <ol className="admin-security-steps">
+            <li>Abra o aplicativo autenticador e escolha adicionar uma conta.</li>
+            <li>Digite a chave abaixo (ou cole o endereço <code>otpauth://</code>, quando o aplicativo aceitar):</li>
+          </ol>
+          <div className="admin-secret-box"><code>{setup.secret.match(/.{1,4}/g)?.join(' ') || setup.secret}</code><button type="button" className="admin-copy-button" onClick={() => { void copy(setup.secret, 'secret'); }}><Copy size={14} /> {copied === 'secret' ? 'Copiado' : 'Copiar chave'}</button></div>
+          <p className="admin-security-copy">No aplicativo: <strong>{state.email}</strong> · SHA-1 · 6 dígitos · 30 segundos.</p>
+          <form className="admin-inline-form" onSubmit={enable}><label><span>Confirme com o código de seis dígitos</span><input inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(event) => setCode(event.target.value)} required placeholder="000000" /></label><button className="button button-primary button-small" type="submit" disabled={busy}>{busy ? 'Confirmando…' : 'Ativar agora'}</button><button className="button button-outline button-small" type="button" onClick={() => { setSetup(null); setCode(''); }}>Cancelar</button></form>
+        </>}
+      </div>}
+    </section>
+    {codes.length > 0 && <section className="admin-panel-card admin-recovery-card"><div className="admin-card-heading"><div><span className="eyebrow">GUARDE AGORA</span><h3>Códigos de recuperação</h3></div></div><p className="admin-security-copy">Cada código entra uma única vez e substitui o aplicativo. Guarde em local seguro e fora do computador de trabalho — esta lista não será mostrada novamente.</p><div className="admin-recovery-codes">{codes.map((item) => <code key={item}>{item}</code>)}</div><div className="admin-backup-actions"><button type="button" className="button button-outline button-small" onClick={() => { void copy(codes.join('\n'), 'all'); }}><Copy size={14} /> {copied === 'all' ? 'Códigos copiados' : 'Copiar todos'}</button></div></section>}
+  </div>;
+}
+
 function NotificationsView({ settings, onRefresh }: { settings: EmailSettings | null; onRefresh: () => void }) {
   const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [feedback, setFeedback] = useState('');
   const [testTo, setTestTo] = useState(''); const [testing, setTesting] = useState(false);
@@ -425,6 +523,10 @@ function NotificationsView({ settings, onRefresh }: { settings: EmailSettings | 
       <div><small>Falhas nas últimas 24h</small><strong>{health?.failures_24h ?? 0}</strong></div>
       <div><small>Última falha</small><strong>{health?.last_failure_at ? formatDate(health.last_failure_at, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Nenhuma'}</strong></div>
     </div>
+    {settings.SMTP_PASS_SET && !settings.secrets_protected && settings.encryption_available && <div className="admin-notice admin-notice-warning" role="status"><ShieldCheck size={17} /><div><strong>A senha guardada ainda está em texto puro.</strong><p>Salve a senha novamente para que ela passe a ser protegida: a aplicação já reescreve o valor na primeira inicialização com <code>APP_SECRET</code> definido, mas um novo salvamento garante a troca.</p></div></div>}
+    {settings.SMTP_PASS_SET && !settings.pass_readable && <div className="admin-notice admin-notice-danger" role="alert"><MailWarning size={17} /><div><strong>A senha guardada não pode ser aberta.</strong><p>A chave <code>APP_SECRET</code> mudou ou está ausente no ambiente, e o envio de e-mail vai falhar até a senha ser informada de novo.</p></div></div>}
+    {settings.SMTP_PASS_SET && settings.secrets_protected && <div className="admin-notice" role="status"><ShieldCheck size={17} /><div><strong>Senha do SMTP protegida.</strong><p>O valor fica cifrado (AES-256-GCM) no arquivo do banco e nunca é devolvido pela API nem escrito na auditoria.</p></div></div>}
+    {!settings.encryption_available && <div className="admin-notice admin-notice-warning" role="status"><MailWarning size={17} /><div><strong>Sem <code>APP_SECRET</code> no ambiente.</strong><p>A senha digitada aqui fica em texto puro no arquivo do banco. Defina a chave no ambiente para protegê-la.</p></div></div>}
     {health?.attention && <div className="admin-alert" role="alert">O último resultado foi uma falha. Mensagens para candidatos e para a equipe podem estar sendo recusadas pelo provedor. Erro: <code>{health.last_error}</code></div>}
     {events.length ? <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Quando</th><th>Mensagem</th><th>Destino</th><th>Resultado</th><th>Detalhe</th></tr></thead><tbody>{events.map((event) => <tr key={event.id}><td>{formatDate(event.created_at, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</td><td><strong>{event.template_key || (event.kind === 'test' ? 'Teste de configuração' : 'Sem modelo')}</strong></td><td>{event.recipient || '—'}</td><td><span className={`admin-status-pill ${event.status === 'failed' ? 'status-alert' : event.status === 'sent' ? 'status-ok' : ''}`}>{eventLabels[event.status] || event.status}</span></td><td>{event.detail || '—'}</td></tr>)}</tbody></table></div> : <div className="admin-empty-inline"><Mail size={19} /><p>Nenhum envio registrado ainda. Assim que um formulário for respondido, o resultado de cada mensagem aparece aqui.</p></div>}
   </section>
