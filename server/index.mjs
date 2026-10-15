@@ -481,6 +481,7 @@ function slideToPublic(row) {
   if (!row) return null;
   const lines = slideTitleLines(row.title);
   const imageKey = contentImageKey(row.image_key);
+  const defaultSlide = heroSlideDefaults.find((slide) => slide.slug === row.slug);
   return {
     id: row.id,
     slug: row.slug,
@@ -496,7 +497,7 @@ function slideToPublic(row) {
     imagePosition: row.image_position || 'center 52%',
     imageAlt: row.image_alt || '',
     imageKey,
-    imageUrl: imageKey ? imagePublicUrl(imageKey) : DEFAULT_HERO_IMAGE,
+    imageUrl: imageKey ? imagePublicUrl(imageKey) : (defaultSlide?.imageUrl || DEFAULT_HERO_IMAGE),
     accentLine: lines.findIndex((line) => line.accent) + 1 || '',
     position: Number(row.position || 0),
     active: Boolean(Number(row.active)),

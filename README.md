@@ -26,7 +26,7 @@ Site institucional responsivo em português brasileiro para a IM Personnel, com 
 - **Imagens leves**: as fotos escolhidas no painel são reduzidas no próprio navegador (maior lado até 1920 px, WebP) antes do envio, e o painel informa a economia obtida.
 - Testes automatizados de integração para os fluxos do portal, do painel, da operação, da exportação e da segurança (20 casos, com integração contínua em `.github/workflows/ci.yml`).
 
-**Não há vagas, clientes, depoimentos, resultados, certificações, telefones ou endereço físico inventados.** O portal começa sem oportunidades até que uma vaga real seja cadastrada. O endereço informado no site limita-se a Recife, Pernambuco, conforme o escopo recebido. WhatsApp só aparece se um número oficial for configurado.
+**Não há vagas, clientes, depoimentos, resultados ou certificações inventados.** O portal começa sem oportunidades até que uma vaga real seja cadastrada. O endereço, telefone, WhatsApp e e-mail públicos foram informados pela solicitante e são centralizados em `src/lib/contact.ts`; revise-os com a IM Personnel antes de qualquer alteração. O primeiro slide preserva a imagem existente e os demais usam novas imagens criadas por IA para este site.
 
 ## Requisitos
 
@@ -211,7 +211,6 @@ As variáveis estão documentadas em `.env.example`:
 - `DATA_DIR` e `DB_FILE`: local da base SQLite e dos currículos privados.
 - `SITE_URL` e `VITE_SITE_URL`: domínio canônico em produção.
 - `ADMIN_BOOTSTRAP_EMAIL` e `ADMIN_BOOTSTRAP_PASSWORD_HASH`: administrador inicial sem Shell (veja a seção específica acima).
-- `VITE_WHATSAPP_NUMBER`: número oficial no formato internacional, somente dígitos.
 - `LEADS_NOTIFICATION_EMAIL`: caixa corporativa para notificações.
 - `SMTP_*` e `EMAIL_FROM`: configuração de e-mail transacional.
 - `APP_SECRET`: chave de 32 bytes em hexadecimal que cifra a senha do SMTP gravada pelo painel. Sem ela, o painel avisa que a senha está em texto puro no arquivo do banco.
@@ -266,7 +265,7 @@ Para uma rotina automática, faça backup consistente do arquivo SQLite, de `pri
 ## Validações necessárias antes da publicação institucional
 
 1. Aprovar bases legais por finalidade, prazos e critérios de descarte, operadores, canal oficial para titulares e o texto final do Aviso de Privacidade.
-2. Confirmar telefone/WhatsApp, e-mail corporativo, endereço institucional completo, links sociais e dados de contato.
+2. Validar os dados de contato informados para o site (telefone/WhatsApp, e-mail e endereço institucional completo), links sociais e canais oficiais.
 3. Validar a metodologia de quatro etapas, textos de serviço e artigos editoriais.
 4. Definir o SMTP, endereço que recebe leads e modelos de notificação.
 5. Configurar prazos aprovados no ambiente de produção, HTTPS, domínio, backups, monitoramento e controles operacionais.
